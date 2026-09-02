@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Pipeline - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Pipeline</h1>
+<p class="sub">The stages every model passes through, the source formats the pipeline
+can accept, and the operational settings driving both.</p>
+
+<div class="panel">
+  <h2>Stages</h2>
+  <table>
+    <thead><tr><th>#</th><th>Stage</th><th>Responsibility</th>
+               <th class="num">Runs</th><th class="num">p95</th></tr></thead>
+    <tbody>
+    {% set purpose = {
+      'intake':   'Read the container through a format adapter and measure what arrived.',
+      'validate': 'Reject input that cannot produce a correct delivery: bad manifest, wrong units, no components.',
+      'extract':  'Write the tag tree and engineering attributes into the catalog.',
+      'convert':  'Produce the delivery format naively, as the measured baseline.',
+      'optimize': 'Weld, de-duplicate, quantise, and build the LOD ladder.',
+      'qa':       'Decide whether the output is fit for users: fidelity and usability gates.',
+      'publish':  'Stage, verify, then atomically swap the live pointer.'
+    } %}
+    {% set timing = {} %}
+    {% for s in stages %}{% set _ = timing.update({s.stage: s}) %}{% endfor %}
+    {% for name in stage_names %}
+      <tr>
+        <td class="num msg">{{ loop.index }}</td>
+        <td class="mono" style="color:var(--accent)">{{ name }}</td>
+        <td>{{ purpose.get(name, '') }}</td>
+        <td class="num">{{ timing[name].executions if name in timing else '-' }}</td>
+        <td class="num mono">{{ (timing[name].p95_ms | ms) if name in timing else '-' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Source formats</h2>
+  <p class="msg" style="margin-bottom:12px">
+    Everything downstream of intake works against one neutral representation, so
+    adding a format is a new adapter rather than a pipeline change. The proprietary
+    formats are registered as explicit stubs: each names the external converter it
+    would drive, and fails with a clear classified error instead of an obscure one.
+  </p>
+  <table>
+    <thead><tr><th>Extension</th><th>Status</th><th>Format</th><th>External dependency</th></tr></thead>
+    <tbody>
+    {% for ext, a in adapters %}
+      <tr>
+        <td class="mono">{{ ext }}</td>
+        <td>
+          {% if a.implemented %}<span class="badge b-ok">implemented</span>
+          {% else %}<span class="badge b-skipped">not configured</span>{% endif %}
+        </td>
+        <td>{{ a.name }}</td>
+        <td class="msg">{{ a.external_tool or 'none needed' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="grid g2">
+  <div class="panel">
+    <h2>Quality gates</h2>
+    <table class="attr-table">
+      {% for k, v in config.qa_gates.items() %}
+        <tr><td>{{ k }}</td><td class="mono">{{ v }}</td></tr>
+      {% endfor %}
+    </table>
+    <h2 style="margin-top:20px">Validation</h2>
+    <table class="attr-table">
+      <tr><td>tag_pattern</td><td class="mono">{{ config.validation.tag_pattern }}</td></tr>
+      <tr><td>required_attributes</td><td class="mono">{{ config.validation.required_attributes | join(', ') }}</td></tr>
+      <tr><td>allowed_unit_systems</td><td class="mono">{{ config.validation.allowed_unit_systems | join(', ') }}</td></tr>
+      <tr><td>max_components</td><td class="mono">{{ config.validation.max_components | num }}</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Orchestration</h2>
+    <table class="attr-table">
+      {% for k, v in config.orchestrator.items() %}
+        <tr><td>{{ k }}</td><td class="mono">{{ v }}</td></tr>
+      {% endfor %}
+    </table>
+    <h2 style="margin-top:20px">Optimisation</h2>
+    <table class="attr-table">
+      <tr><td>weld_tolerance</td><td class="mono">{{ config.optimize.weld_tolerance }}</td></tr>
+      <tr><td>min_faces_to_decimate</td><td class="mono">{{ config.optimize.min_faces_to_decimate }}</td></tr>
+      <tr><td>lod_min_rendered_triangles</td><td class="mono">{{ config.optimize.lod_min_rendered_triangles | num }}</td></tr>
+      {% for l in config.optimize.lod_levels %}
+        <tr><td>{{ l.name }}</td><td class="mono">target ratio {{ l.target_ratio }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Everything is configuration.</strong> SLAs, retry policy, QA thresholds, tag
+  standards and LOD targets all live in <code>config/pipeline.json</code>, so tuning the
+  pipeline for a new project is an edit rather than a release.
+</div>
+
+{% endblock %}

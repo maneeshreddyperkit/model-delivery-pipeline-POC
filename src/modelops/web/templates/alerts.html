@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Alerts - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:6px">
+  <h1 style="margin:0">Alerts</h1>
+  <div class="spacer"></div>
+  <button id="evaluate">Re-evaluate rules</button>
+</div>
+<p class="sub">
+  Rules run after every processing pass. Alerts are de-duplicated by a stable key
+  with a cooldown window, so a recurring problem raises one alert rather than one
+  per affected job. Delivery is an append-only local file
+  (<code>data/logs/alert_webhook.jsonl</code>); pointing that at a real
+  notification channel is a single function.
+</p>
+
+<div id="result" class="note" style="display:none"></div>
+
+<div class="panel">
+  <table>
+    <thead><tr><th>Raised</th><th>Severity</th><th>Rule</th><th>Subject</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for a in alerts %}
+      <tr>
+        <td class="mono nowrap">{{ a.created_at }}</td>
+        <td><span class="badge b-{{ a.severity | lower }}">{{ a.severity }}</span></td>
+        <td class="mono">{{ a.rule_code }}</td>
+        <td>{{ a.subject }}</td>
+        <td class="msg" style="white-space:pre-line">{{ a.body }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">No alerts raised.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('evaluate').addEventListener('click', async (e) => {
+  e.target.disabled = true;
+  e.target.textContent = 'Evaluating...';
+  const box = document.getElementById('result');
+  try {
+    const res = await fetch('/alerts/evaluate', { method: 'POST' });
+    const data = await res.json();
+    box.style.display = 'block';
+    box.innerHTML = `<strong>${data.raised}</strong> alert(s) raised, ` +
+                    `<strong>${data.suppressed}</strong> suppressed by cooldown ` +
+                    `from ${data.evaluated} matching condition(s). Reloading...`;
+    setTimeout(() => location.reload(), 1200);
+  } catch (err) {
+    box.style.display = 'block';
+    box.textContent = 'Failed to evaluate: ' + err;
+    e.target.disabled = false;
+    e.target.textContent = 'Re-evaluate rules';
+  }
+});
+</script>
+{% endblock %}

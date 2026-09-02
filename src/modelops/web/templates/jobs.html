@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Jobs - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Delivery jobs</h1>
+<p class="sub">Every attempt, including retries and quarantines. Open a job to see the
+per-stage timeline, the metrics each stage recorded, and its log.</p>
+
+<div class="row" style="margin-bottom:16px">
+  <a class="btn" href="/jobs" style="{{ '' if status else 'filter:brightness(1.15)' }}">All</a>
+  {% for s in ['SUCCEEDED', 'QUARANTINED', 'FAILED', 'RETRYING', 'QUEUED'] %}
+    <a class="btn ghost" href="/jobs?status={{ s }}"
+       style="{{ 'border-color:var(--accent)' if status == s else '' }}">{{ s | title }}</a>
+  {% endfor %}
+</div>
+
+<div class="panel">
+  <table>
+    <thead><tr>
+      <th>Job</th><th>Project</th><th>Model</th><th>Rev</th><th>Trigger</th>
+      <th>Status</th><th class="num">Attempt</th><th class="num">Duration</th>
+      <th>SLA</th><th>Error</th>
+    </tr></thead>
+    <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td><a href="/jobs/{{ j.job_id }}">#{{ j.job_id }}</a></td>
+        <td class="mono">{{ j.project_code }}</td>
+        <td class="mono">{{ j.model_key }}</td>
+        <td class="mono">{{ j.revision_label }}</td>
+        <td class="msg">{{ j.trigger }}</td>
+        <td><span class="badge b-{{ j.status | lower }}">{{ j.status }}</span></td>
+        <td class="num">{{ j.attempt }} / {{ j.max_attempts }}</td>
+        <td class="num mono">{{ j.duration_ms | ms }}</td>
+        <td>{% if j.sla_breached %}<span class="badge b-warn">BREACH</span>{% else %}<span class="msg">ok</span>{% endif %}</td>
+        <td>
+          {% if j.error_class %}
+            <div class="mono err-text">{{ j.error_class }}</div>
+            <div class="msg">{{ (j.error_message or '')[:110] }}</div>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="10" class="empty">No jobs match.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

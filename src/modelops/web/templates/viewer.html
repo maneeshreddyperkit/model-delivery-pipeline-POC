@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Viewer - Model Delivery Pipeline{% endblock %}
+{% block main_class %}full{% endblock %}
+{% block content %}
+
+{% if not available %}
+  <div class="wrap"><div class="empty">
+    No models are published yet. Run <code>python -m modelops demo</code> first.
+  </div></div>
+{% else %}
+<div class="viewer-shell">
+
+  <!-- ---------------- left: model picker + tag tree ---------------- -->
+  <aside class="viewer-pane">
+    <p class="msg" style="margin:0 0 16px">
+      Every model here was checked, shrunk and published automatically, with no
+      manual steps.
+      <a href="/">See how it got here &rarr;</a>
+    </p>
+
+    <h2>Model</h2>
+    <select id="model-select" style="width:100%">
+      {% for m in available %}
+        <option value="{{ m.project_code }}/{{ m.model_key }}"
+          {{ 'selected' if m.project_code == selected.project_code and m.model_key == selected.model_key }}>
+          {{ m.project_code }} &middot; {{ m.model_key }} ({{ '{:,}'.format(m.component_count or 0) }})
+        </option>
+      {% endfor %}
+    </select>
+
+    <div id="model-meta" style="margin-top:12px"></div>
+
+    <h2 style="margin-top:18px">Detail level</h2>
+    <select id="lod-select" style="width:100%"></select>
+    <p class="msg" style="margin-top:6px">
+      Coarser levels are decimated copies of the shared geometry, so they cut what
+      the GPU draws without changing the tag tree.
+    </p>
+
+    <h2 style="margin-top:18px">Components</h2>
+    <input type="text" id="tag-filter" placeholder="Filter by tag or category"
+           style="width:100%; margin-bottom:8px">
+    <div id="tree" class="tree"></div>
+  </aside>
+
+  <!-- ---------------- centre: canvas ---------------- -->
+  <div class="viewer-canvas" id="canvas-host">
+    <div class="viewer-status" id="status">Loading model...</div>
+    <div class="viewer-hud" id="hud"></div>
+  </div>
+
+  <!-- ---------------- right: attributes ---------------- -->
+  <aside class="viewer-pane right">
+    <h2>Selected component</h2>
+    <div id="selection">
+      <p class="msg">Click a component in the model, or pick one from the list.</p>
+    </div>
+    <div style="margin-top:16px">
+      <button class="ghost" id="isolate" disabled>Isolate</button>
+      <button class="ghost" id="reset-view">Reset view</button>
+    </div>
+    <div id="legend-box" style="margin-top:20px"></div>
+  </aside>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+{% if available %}
+<script type="importmap">
+{
+  "imports": {
+    "three": "/static/vendor/build/three.module.js",
+    "three/addons/": "/static/vendor/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="/static/viewer.js"></script>
+{% endif %}
+{% endblock %}

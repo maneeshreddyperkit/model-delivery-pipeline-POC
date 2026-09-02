@@ -1,0 +1,27 @@
+# Render blueprint for the demonstration deployment.
+#
+# The pipeline is designed to run on a workstation or an on-prem server; this
+# file exists purely so the dashboard can be handed to someone as a link.
+# Nothing here is required to run the POC locally.
+#
+# Two things worth knowing about the hosted instance:
+#   * The disk is ephemeral. The catalog and the published models are rebuilt
+#     from the synthetic generator on every deploy, which takes a few seconds.
+#   * One worker, several threads. SQLite is a single file and the app opens
+#     it read-only for dashboard queries, so threads are safe and processes
+#     would only add contention.
+
+services:
+  - type: web
+    name: model-delivery-pipeline
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 180
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: PYTHONUNBUFFERED
+        value: "1"

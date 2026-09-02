@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Model Delivery Pipeline{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#9635;</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">
+    <span class="mark">&#9635;</span>
+    <div>
+      <strong>Model Delivery Pipeline</strong>
+      <small>Local proof of concept</small>
+    </div>
+  </a>
+  <nav>
+    <a href="/"        class="{{ 'on' if page == 'overview' }}">Operations</a>
+    <a href="/jobs"    class="{{ 'on' if page == 'jobs' }}">Jobs</a>
+    <a href="/catalog" class="{{ 'on' if page == 'catalog' }}">Catalog</a>
+    <a href="/viewer"  class="{{ 'on' if page == 'viewer' }}">Viewer</a>
+    <a href="/query"   class="{{ 'on' if page == 'query' }}">SQL</a>
+  </nav>
+  <a class="secondary {{ 'on' if page in ('pipeline', 'alerts') }}" href="/pipeline">How it works</a>
+</header>
+
+<main class="{% block main_class %}wrap{% endblock %}">
+  {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

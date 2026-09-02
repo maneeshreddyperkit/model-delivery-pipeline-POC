@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Operations - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Delivery operations</h1>
+<p class="sub">
+  Every model that arrived, what the pipeline did with it, and what is currently
+  live for users. All figures are measured from the runs in this catalog.
+</p>
+
+<div class="kpis">
+  <div class="kpi {{ 'ok' if stats.success_rate_pct >= 90 else 'warn' if stats.success_rate_pct >= 70 else 'err' }}">
+    <div class="label">Success rate</div>
+    <div class="value">{{ stats.success_rate_pct }}%</div>
+    <div class="foot">{{ stats.jobs_succeeded }} of {{ stats.jobs_total }} jobs</div>
+  </div>
+  <div class="kpi accent">
+    <div class="label">Models live</div>
+    <div class="value">{{ stats.models_live }}</div>
+    <div class="foot">{{ stats.subscribers | num }} subscribers served</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Components indexed</div>
+    <div class="value">{{ '{:,.0f}'.format(stats.components_live) }}</div>
+    <div class="foot">{{ '{:,.0f}'.format(stats.triangles_live) }} triangles</div>
+  </div>
+  <div class="kpi ok">
+    <div class="label">Payload reduction</div>
+    <div class="value">{{ stats.payload_reduction_pct }}%</div>
+    <div class="foot">vs naive conversion</div>
+  </div>
+  <a href="/alerts"
+     class="kpi {{ 'err' if stats.critical_alerts else 'warn' if stats.open_alerts else 'ok' }}">
+    <div class="label">Open alerts</div>
+    <div class="value">{{ stats.open_alerts }}</div>
+    <div class="foot">{{ stats.critical_alerts }} critical &middot; view all</div>
+  </a>
+</div>
+
+<div class="panel">
+  <h2>Delivery payload</h2>
+  <p class="msg" style="margin-bottom:14px">
+    All three figures cover the same live models. The naive figure is a real file the
+    pipeline writes and measures on every run, a flat conversion with no
+    instancing, so the reduction is like-for-like rather than an estimate.
+  </p>
+  <table>
+    <tr>
+      <td style="width:34%">Naive conversion, no optimisation</td>
+      <td class="num mono" style="width:14%">{{ stats.naive_bytes | bytes }}</td>
+      <td><div class="bar err"><span style="width:100%"></span></div></td>
+      <td class="num" style="width:9%">baseline</td>
+    </tr>
+    <tr>
+      <td>Delivered to the share (all LODs)</td>
+      <td class="num mono">{{ stats.published_bytes | bytes }}</td>
+      <td><div class="bar"><span style="width:{{ (100 - stats.payload_reduction_pct) if stats.payload_reduction_pct < 100 else 1 }}%"></span></div></td>
+      <td class="num">&minus;{{ stats.payload_reduction_pct }}%</td>
+    </tr>
+    <tr>
+      <td>Transferred to a viewer (gzip)</td>
+      <td class="num mono">{{ stats.wire_bytes | bytes }}</td>
+      <td><div class="bar ok"><span style="width:{{ (100 - stats.wire_reduction_pct) if stats.wire_reduction_pct < 100 else 1 }}%"></span></div></td>
+      <td class="num">&minus;{{ stats.wire_reduction_pct }}%</td>
+    </tr>
+  </table>
+</div>
+
+<div class="grid g2">
+  <div class="panel">
+    <h2>Where processing time goes</h2>
+    <p class="msg" style="margin-bottom:14px">
+      End to end a model takes {{ stats.avg_duration_s }}s on average,
+      {{ stats.p95_duration_s }}s at p95. Per-stage timings say which step to
+      optimise first when that number stops being acceptable.
+    </p>
+    {% if stages %}
+    <table>
+      <thead><tr>
+        <th>Stage</th><th class="num">Runs</th><th class="num">Fail</th>
+        <th class="num">p50</th><th class="num">p95</th><th class="num">Max</th>
+      </tr></thead>
+      <tbody>
+      {% set slowest = stages | map(attribute='p95_ms') | max %}
+      {% for s in stages %}
+        <tr>
+          <td>
+            <div class="mono">{{ s.stage }}</div>
+            <div class="bar" style="margin-top:5px">
+              <span style="width:{{ (100 * s.p95_ms / slowest) if slowest else 0 }}%"></span>
+            </div>
+          </td>
+          <td class="num">{{ s.executions }}</td>
+          <td class="num {{ 'err-text' if s.failures }}">{{ s.failures }}</td>
+          <td class="num mono">{{ s.p50_ms | ms }}</td>
+          <td class="num mono">{{ s.p95_ms | ms }}</td>
+          <td class="num mono">{{ s.max_ms | ms }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="empty">No completed stages yet.</div>{% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Why deliveries failed</h2>
+    <p class="msg" style="margin-bottom:14px">
+      {{ stats.jobs_retried }} job(s) recovered on their own through retry with
+      backoff; {{ stats.jobs_quarantined }} were quarantined for a human.
+    </p>
+    {% if taxonomy %}
+    <table>
+      <thead><tr><th>Error class</th><th>Kind</th><th class="num">Count</th></tr></thead>
+      <tbody>
+      {% for f in taxonomy %}
+        <tr>
+          <td class="mono">{{ f.error_class }}</td>
+          <td><span class="badge {{ 'b-error' if f.error_kind == 'PERMANENT' else 'b-warn' }}">{{ f.error_kind }}</span></td>
+          <td class="num">{{ f.occurrences }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="msg" style="margin-top:12px">
+      Permanent failures are quarantined on the first attempt. Retrying a corrupt
+      file cannot fix it and only delays the models queued behind it.
+    </p>
+    {% else %}<div class="empty">No failures recorded.</div>{% endif %}
+
+    <h2 style="margin-top:22px">Quality findings</h2>
+    {% if qa %}
+    <table>
+      <thead><tr><th>Rule</th><th>Severity</th><th class="num">Findings</th><th class="num">Models</th></tr></thead>
+      <tbody>
+      {% for f in qa %}
+        <tr>
+          <td class="mono">{{ f.rule_code }}</td>
+          <td><span class="badge b-{{ f.severity | lower }}">{{ f.severity }}</span></td>
+          <td class="num">{{ f.finding_count }}</td>
+          <td class="num">{{ f.revisions_affected }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<div class="empty">No findings.</div>{% endif %}
+  </div>
+</div>
+
+{% if usage %}
+<div class="panel">
+  <h2>Viewer consumption</h2>
+  <p class="msg">Unique users per day across all live models.</p>
+  {% set peak = usage | map(attribute='users') | max %}
+  <div class="spark" style="margin-top:12px">
+    {% for u in usage %}
+      <div style="height:{{ (100 * u.users / peak) if peak else 0 }}%"
+           title="{{ u.stat_date }}: {{ u.users | num }} users, {{ u.sessions | num }} sessions"></div>
+    {% endfor %}
+  </div>
+  <div class="row" style="margin-top:8px; color:var(--muted); font-size:11.5px">
+    <span>{{ usage[0].stat_date }}</span><div class="spacer"></div><span>{{ usage[-1].stat_date }}</span>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>Recent jobs</h2>
+  <table>
+    <thead><tr>
+      <th>Job</th><th>Project</th><th>Model</th><th>Rev</th><th>Status</th>
+      <th class="num">Try</th><th class="num">Duration</th><th>Error</th>
+    </tr></thead>
+    <tbody>
+    {% for j in recent %}
+      <tr>
+        <td><a href="/jobs/{{ j.job_id }}">#{{ j.job_id }}</a></td>
+        <td class="mono">{{ j.project_code }}</td>
+        <td class="mono">{{ j.model_key }}</td>
+        <td class="mono">{{ j.revision_label }}</td>
+        <td><span class="badge b-{{ j.status | lower }}">{{ j.status }}</span></td>
+        <td class="num">{{ j.attempt }}</td>
+        <td class="num mono">{{ j.duration_ms | ms }}</td>
+        <td class="mono {{ 'err-text' if j.error_class }}">{{ j.error_class or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

@@ -1,0 +1,1 @@
+three.js r0.160.1 vendored from unpkg.com. MIT licence. Downloaded once; the viewer runs entirely offline from these files.

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Catalog - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Model catalog</h1>
+<p class="sub">What is live in the viewer right now, and what is not reaching users.</p>
+
+<div class="panel">
+  <h2>Live models</h2>
+  <table>
+    <thead><tr>
+      <th>Project</th><th>Model</th><th>Discipline</th><th>Rev</th>
+      <th class="num">Components</th><th class="num">Triangles</th>
+      <th class="num">Naive</th><th class="num">Delivered</th><th class="num">Wire</th>
+      <th class="num">Saved</th><th class="num">Age</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for m in models %}
+      <tr>
+        <td class="mono">{{ m.project_code }}</td>
+        <td>
+          <div class="mono">{{ m.model_key }}</div>
+          <div class="msg">{{ m.model_name }}</div>
+        </td>
+        <td class="msg">{{ m.discipline or '-' }}</td>
+        <td>
+          {% if m.live_revision %}
+            <span class="badge b-published">{{ m.live_revision }}</span>
+          {% else %}
+            <span class="badge b-warn">not live</span>
+          {% endif %}
+        </td>
+        <td class="num">{{ m.component_count | num }}</td>
+        <td class="num">{{ m.triangle_count | num }}</td>
+        <td class="num mono">{{ m.naive_bytes | bytes }}</td>
+        <td class="num mono">{{ m.published_bytes | bytes }}</td>
+        <td class="num mono">{{ m.wire_bytes | bytes }}</td>
+        <td class="num">
+          {% if m.size_reduction_pct %}
+            <span style="color:var(--ok)">{{ m.size_reduction_pct }}%</span>
+          {% else %}-{% endif %}
+        </td>
+        <td class="num msg">{{ '%.0f h' % m.age_hours if m.age_hours is not none else '-' }}</td>
+        <td>
+          {% if m.live_revision %}
+            <a class="btn ghost" href="/viewer/{{ m.project_code }}/{{ m.model_key }}">Open</a>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="12" class="empty">Nothing published yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Not delivered</h2>
+  <p class="msg" style="margin-bottom:12px">
+    Each of these has a <code>.failure.json</code> sidecar in the quarantine folder
+    describing the cause and the command to replay it. Where a previous revision was
+    already live, that revision stays live, so a bad export never takes a working
+    model away from users.
+  </p>
+  <table>
+    <thead><tr><th>Project</th><th>Model</th><th>Rev</th><th>Status</th>
+               <th>Cause</th><th>Detail</th><th>Job</th></tr></thead>
+    <tbody>
+    {% for b in blocked %}
+      <tr>
+        <td class="mono">{{ b.project_code }}</td>
+        <td class="mono">{{ b.model_key }}</td>
+        <td class="mono">{{ b.revision_label }}</td>
+        <td><span class="badge b-{{ b.status | lower }}">{{ b.status }}</span></td>
+        <td class="mono err-text">{{ b.error_class }}</td>
+        <td class="msg">{{ b.error_message }}</td>
+        <td><a href="/jobs/{{ b.job_id }}">#{{ b.job_id }}</a></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="empty">Everything delivered.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

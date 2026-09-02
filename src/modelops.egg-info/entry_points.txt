@@ -1,0 +1,2 @@
+[console_scripts]
+modelops = modelops.cli:main

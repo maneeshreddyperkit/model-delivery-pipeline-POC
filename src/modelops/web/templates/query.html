@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}SQL - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Catalog SQL</h1>
+<p class="sub">
+  The metadata catalog is the part of a model delivery that downstream systems
+  actually consume: tags, attributes, commissioning systems, and the run
+  history behind them. Queries here run read-only. The statement must parse as a
+  single SELECT or WITH, and the connection is opened read-only at the file level.
+</p>
+
+<div class="panel">
+  <div class="row" style="margin-bottom:10px">
+    <select id="preset" style="min-width:340px">
+      <option value="">Load an example query...</option>
+      {% for p in presets %}
+        <option value="{{ loop.index0 }}">{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <div class="spacer"></div>
+    <button id="run">Run query</button>
+  </div>
+  <textarea id="sql" rows="11" spellcheck="false">{{ presets[0].sql }}</textarea>
+  <div class="row" style="margin-top:10px">
+    <span class="msg" id="status">Ready.</span>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Result</h2>
+  <div id="out" style="overflow:auto"><div class="empty">Run a query to see results.</div></div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const PRESETS = {{ presets | tojson }};
+
+document.getElementById('preset').addEventListener('change', (e) => {
+  if (e.target.value === '') return;
+  document.getElementById('sql').value = PRESETS[+e.target.value].sql;
+});
+
+function escapeHtml(v) {
+  return String(v === null || v === undefined ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function run() {
+  const sql = document.getElementById('sql').value;
+  const status = document.getElementById('status');
+  const out = document.getElementById('out');
+  status.textContent = 'Running...';
+
+  try {
+    const res = await fetch('/api/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      status.innerHTML = '<span class="err-text">' + escapeHtml(data.error) + '</span>';
+      out.innerHTML = '<div class="empty">No result.</div>';
+      return;
+    }
+    if (!data.rows.length) {
+      status.textContent = '0 rows.';
+      out.innerHTML = '<div class="empty">Query returned no rows.</div>';
+      return;
+    }
+
+    let html = '<table><thead><tr>' +
+      data.columns.map(c => '<th>' + escapeHtml(c) + '</th>').join('') +
+      '</tr></thead><tbody>';
+    for (const row of data.rows) {
+      html += '<tr>' + row.map(v => {
+        const numeric = typeof v === 'number';
+        return '<td class="' + (numeric ? 'num mono' : '') + '">' +
+               escapeHtml(numeric ? v.toLocaleString() : v) + '</td>';
+      }).join('') + '</tr>';
+    }
+    out.innerHTML = html + '</tbody></table>';
+    status.textContent = data.rows.length + ' row(s)' +
+      (data.truncated ? ' (truncated at 500)' : '') + '.';
+  } catch (err) {
+    status.innerHTML = '<span class="err-text">' + escapeHtml(err) + '</span>';
+  }
+}
+
+document.getElementById('run').addEventListener('click', run);
+document.getElementById('sql').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') run();
+});
+run();
+</script>
+{% endblock %}
