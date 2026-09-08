@@ -1,1 +1,65 @@
-three.js r0.160.1 vendored from unpkg.com. MIT licence. Downloaded once; the viewer runs entirely offline from these files.
+Vendored third-party assets
+===========================
+
+Everything the browser loads is served from this repository. There are no
+CDN references and no network calls at runtime; each file below was
+downloaded once, at build time, and committed.
+
+That is a deliberate constraint, not an accident of packaging. The
+pipeline is meant to run on a machine with no outbound access.
+
+
+3D
+--
+three.js                r0.160.1    MIT             from unpkg.com
+  build/three.module.js
+  examples/jsm/controls/OrbitControls.js
+  examples/jsm/loaders/GLTFLoader.js
+  examples/jsm/utils/BufferGeometryUtils.js
+
+
+Typefaces (fonts/)
+------------------
+Inter                   v5.0.20     SIL OFL 1.1     via @fontsource/inter
+  inter-400.woff2, inter-500.woff2, inter-600.woff2, inter-700.woff2
+
+JetBrains Mono          v5.0.20     SIL OFL 1.1     via @fontsource/jetbrains-mono
+  jetbrains-mono-400.woff2, jetbrains-mono-500.woff2
+
+Latin subsets only. Together they are under 140 KB, which is why the
+whole set can be self-hosted without thinking about it.
+
+
+Libraries (lib/)
+----------------
+ECharts                 5.5.1       Apache-2.0      window.echarts
+  Nightly throughput on the operations page and the attribute
+  completeness grid on handover. Loaded only by those two pages.
+
+Alpine.js               3.14.1      MIT             window.Alpine
+  Filtering and column sorting on the work packages table, without a
+  build step or a framework. Loaded only by that page.
+
+Motion One              10.18.0     MIT             window.Motion
+  Entrance animation, via the browser's native Web Animations API.
+  Every animation starts from a hidden state, so static/motion.js also
+  force-finishes anything still running after one second: a stalled
+  animation must not be able to leave the page blank.
+
+
+Build-time only (../../../../scripts/vendor/)
+---------------------------------------------
+Lucide                  0.451.0     ISC
+  The full 347 KB icon bundle is not served. scripts/build_icon_sprite.js
+  reads it and emits templates/_icons.html, a 6 KB sprite holding only
+  the icons the app uses, which is inlined into the base template. So
+  there is no icon library in the browser at all. Re-run that script
+  after adding an icon.
+
+
+Deliberately not used
+---------------------
+Tailwind CSS. It would need a Node toolchain and a build step on a
+managed Windows machine to produce one stylesheet, and the design system
+in static/app.css already provides the tokens that would justify it.
+The cost is real and the benefit here is not.

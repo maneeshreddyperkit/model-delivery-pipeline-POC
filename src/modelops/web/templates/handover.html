@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Handover - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Structured handover</h1>
+<p class="sub">
+  The viewer is one consumer of this catalog, not the only one. Cost, planning
+  and completions all need to know what is in the plant, and they need it in a
+  form a machine can read. These feeds are generated from the same published
+  revisions the viewer is served from, on request rather than on a schedule, so
+  a download is never a stale export.
+</p>
+
+<div class="row" style="margin-bottom:16px">
+  <a class="btn ghost" href="/handover"
+     style="{{ '' if project else 'border-color:var(--k-yellow)' }}">All projects</a>
+  {% for p in projects %}
+    <a class="btn ghost" href="/handover?project={{ p.project_code }}"
+       style="{{ 'border-color:var(--k-yellow)' if project == p.project_code else '' }}">
+      {{ p.project_code }}</a>
+  {% endfor %}
+</div>
+
+<h2>Outbound feeds</h2>
+<div class="panel">
+  <table>
+    <thead><tr>
+      <th style="width:16%">Feed</th><th style="width:34%">What it carries</th>
+      <th>Consumer</th><th class="num">Records</th><th>Format</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for f in feeds %}
+      <tr>
+        <td><strong>{{ f.name }}</strong><div class="hint mono">{{ f.key }}</div></td>
+        <td class="msg">{{ f.purpose }}</td>
+        <td class="msg">{{ f.consumer }}</td>
+        <td class="num">{{ f.records | num }}</td>
+        <td><span class="badge">{{ f.fmt }}</span></td>
+        <td class="nowrap">
+          <a class="btn ghost" href="/handover/preview/{{ f.key }}?project={{ project }}"
+             target="_blank" rel="noopener"><svg class="i"><use href="#i-external"/></svg>Preview</a>
+          <a class="btn ghost" href="/handover/feed/{{ f.key }}?project={{ project }}"><svg class="i"><use href="#i-download"/></svg>Download</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Handover completeness</h2>
+<p class="sub">
+  Coverage of the attributes a receiving system needs, measured across every
+  geometry-bearing component in the live models. Structural nodes such as areas
+  and pipe runs are excluded: they carry no material and no weight by
+  definition, and counting them would invent a shortfall nobody can fix.
+</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Components in scope</div>
+    <div class="value">{{ completeness.components | num }}</div>
+    <div class="foot">published and current</div>
+  </div>
+  {% for a in completeness.overall %}
+    <div class="kpi {{ 'attention' if a.missing else 'ok' }}">
+      <div class="label">{{ a.label }}</div>
+      <div class="value">{{ a.pct }}%</div>
+      <div class="foot">{{ a.missing | num }} missing</div>
+    </div>
+  {% endfor %}
+</div>
+
+<div class="note">
+  {% if completeness.complete == completeness.overall | length %}
+    Every attribute is fully populated across the live models. Nothing here
+    needs chasing at turnover.
+  {% else %}
+    The gaps above are the difference between a handover that closes and one
+    that turns into a reconciliation exercise eighteen months from now. Each one
+    is attributable to a specific component in a specific model, which is what
+    the attribute exceptions feed exists to hand over. This is data the pipeline
+    already had; the only new thing is that someone is now counting it.
+  {% endif %}
+</div>
+
+{% if completeness.disciplines %}
+<div class="panel">
+  <h2>Where the gaps are</h2>
+  <p class="msg" style="margin-bottom:14px">
+    Every attribute against every discipline. Grey is fully populated; the
+    brighter a cell, the more components in that discipline are missing that
+    attribute. The point of the grid is that gaps are never spread evenly, so
+    the fix is a conversation with one discipline rather than a programme.
+  </p>
+  <div id="completeness-chart" style="height:{{ 90 + 34 * (completeness.disciplines | length) }}px"></div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <table>
+    <thead><tr>
+      <th>Discipline</th><th class="num">Components</th>
+      {% for label in completeness.attributes %}<th class="num">{{ label }}</th>{% endfor %}
+    </tr></thead>
+    <tbody>
+    {% for d in completeness.disciplines %}
+      <tr>
+        <td><strong>{{ d.discipline }}</strong></td>
+        <td class="num">{{ d.components | num }}</td>
+        {% for c in d.cells %}
+          <td class="num {{ 'attention' if c.missing }}">
+            {{ c.pct }}%
+            {% if c.missing %}<div class="hint">{{ c.missing | num }} short</div>{% endif %}
+          </td>
+        {% endfor %}
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="empty">No published components.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>Integration boundary</h2>
+<p class="sub">
+  What this pipeline reads and what it would write to. Connectors that are not
+  built are listed rather than omitted, each naming the interface it would use,
+  so the extension point and the honest scope of the proof of concept are the
+  same thing.
+</p>
+
+<div class="split">
+  <div class="panel">
+    <h3>Inbound source formats</h3>
+    <table>
+      <thead><tr><th>Format</th><th>Extensions</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for a in integration.inbound %}
+        <tr>
+          <td><strong>{{ a.name }}</strong><div class="hint">{{ a.detail }}</div></td>
+          <td class="mono msg">{{ a.extensions }}</td>
+          <td>
+            <span class="badge {{ 'b-ready' if a.implemented else '' }}">
+              {{ 'Implemented' if a.implemented else 'Registered' }}</span>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h3>Outbound consumers</h3>
+    <table>
+      <thead><tr><th>System</th><th>Interface</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for c in integration.outbound %}
+        <tr>
+          <td><strong>{{ c.name }}</strong><div class="hint">{{ c.role }}</div></td>
+          <td class="msg">{{ c.interface }}</td>
+          <td>
+            <span class="badge {{ 'b-ready' if c.implemented else '' }}">
+              {{ 'Connected' if c.implemented else 'Feed only' }}</span>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+{% if completeness.disciplines %}
+<script src="/static/vendor/lib/echarts.min.js"></script>
+<script>
+(function () {
+  const labels = {{ completeness.attributes | tojson }};
+  const rows = {{ completeness.disciplines | tojson }};
+  const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
+
+  // ECharts heatmaps index from the bottom-left, so the discipline order is
+  // reversed to read top-down the same way the table below does.
+  const disciplines = rows.map((r) => r.discipline).reverse();
+  const ordered = [...rows].reverse();
+
+  let worst = 100;
+  ordered.forEach((row) => row.cells.forEach((c) => { worst = Math.min(worst, c.pct); }));
+
+  // The cell colour runs from yellow at the worst value to grey at 100, so the
+  // label has to flip from dark to light halfway or it disappears into its own
+  // cell at either end.
+  const midpoint = (worst + 100) / 2;
+  const cells = [];
+  ordered.forEach((row, y) => {
+    row.cells.forEach((cell, x) => {
+      cells.push({
+        value: [x, y, cell.pct],
+        missing: cell.missing,
+        label: { color: cell.pct <= midpoint ? v('--k-black') : v('--grey-300') },
+      });
+    });
+  });
+
+  const chart = echarts.init(document.getElementById('completeness-chart'));
+  chart.setOption({
+    grid: { left: 96, right: 24, top: 12, bottom: 58 },
+    tooltip: {
+      backgroundColor: v('--grey-950'),
+      borderColor: v('--line'),
+      textStyle: { color: v('--text'), fontSize: 12 },
+      formatter: (p) =>
+        `${disciplines[p.value[1]]} &middot; ${labels[p.value[0]]}<br>` +
+        `<strong>${p.value[2]}%</strong> populated` +
+        (p.data.missing ? ` &middot; ${p.data.missing.toLocaleString()} short` : ''),
+    },
+    xAxis: {
+      type: 'category', data: labels, splitArea: { show: true },
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: v('--grey-400'), fontSize: 11 },
+    },
+    yAxis: {
+      type: 'category', data: disciplines, splitArea: { show: true },
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: v('--grey-400'), fontSize: 11 },
+    },
+    visualMap: {
+      // Anchored at the worst cell so a small shortfall still reads as one.
+      min: Math.min(worst, 99.9), max: 100, calculable: false, show: false,
+      inRange: { color: [v('--k-yellow'), v('--grey-800')] },
+    },
+    series: [{
+      type: 'heatmap', data: cells,
+      itemStyle: { borderColor: v('--panel'), borderWidth: 3, borderRadius: 3 },
+      label: {
+        show: true, fontSize: 11,
+        formatter: (p) => (p.value[2] === 100 ? '' : p.value[2].toFixed(1) + '%'),
+      },
+      emphasis: { itemStyle: { borderColor: v('--text'), borderWidth: 1 } },
+    }],
+  });
+  window.addEventListener('resize', () => chart.resize());
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -23,10 +23,14 @@ from pathlib import Path
 from flask import (Flask, Response, abort, jsonify, render_template, request,
                    send_file)
 
+from .. import awp, handover
+from ..agent import Agent
+from ..agent import tools as agent_tools
 from ..config import Config
 from ..db import Database, UnsafeQuery, assert_read_only, open_read_only
-from ..monitoring import (AlertEngine, failure_taxonomy, overview,
-                          project_health, qa_summary, stage_latency)
+from ..monitoring import (AlertEngine, daily_throughput, district_health,
+                          failure_taxonomy, overview, project_health,
+                          qa_summary, stage_latency)
 
 PRESET_QUERIES = [
     {
@@ -127,6 +131,15 @@ def create_app(config: Config, db: Database) -> Flask:
     def rows(sql: str, params=()) -> list[dict]:
         return [dict(r) for r in db.query(sql, params)]
 
+    # One agent for the process, so the Ollama health probe and the loaded
+    # model are shared rather than rediscovered on every request.
+    agent_holder: list[Agent] = []
+
+    def _agent() -> Agent:
+        if not agent_holder:
+            agent_holder.append(Agent(db))
+        return agent_holder[0]
+
     def live_publication(project_code: str, model_key: str) -> dict | None:
         row = db.query_one(
             "SELECT p.*, r.revision_label, r.revision_id, m.model_name, m.discipline "
@@ -147,15 +160,17 @@ def create_app(config: Config, db: Database) -> Flask:
             stats=overview(db),
             stages=stage_latency(db),
             health=project_health(db),
+            districts=district_health(db),
+            throughput=daily_throughput(db, days=21),
             taxonomy=failure_taxonomy(db),
             qa=qa_summary(db),
             recent=rows(
                 "SELECT j.job_id, j.status, j.attempt, j.duration_ms, j.error_class, "
-                "j.queued_at, m.project_code, m.model_key, r.revision_label "
-                "FROM jobs j "
+                "j.queued_at, j.is_simulated, m.project_code, m.model_key, "
+                "r.revision_label FROM jobs j "
                 "JOIN model_revisions r ON r.revision_id = j.revision_id "
                 "JOIN models m ON m.model_id = r.model_id "
-                "ORDER BY j.job_id DESC LIMIT 15"),
+                "WHERE j.is_simulated = 0 ORDER BY j.job_id DESC LIMIT 15"),
             usage=rows(
                 "SELECT stat_date, SUM(unique_users) AS users, "
                 "SUM(viewer_sessions) AS sessions "
@@ -164,23 +179,34 @@ def create_app(config: Config, db: Database) -> Flask:
 
     @app.route("/jobs")
     def page_jobs():
+        # Default to the runs this machine actually performed. The fleet
+        # history is thousands of rows and would bury them; it is one
+        # click away rather than mixed in silently.
         status = request.args.get("status", "")
-        clause, params = "", []
+        scope = request.args.get("scope", "measured")
+        clauses, params = [], []
         if status:
-            clause = "WHERE j.status = ?"
-            params = [status]
+            clauses.append("j.status = ?")
+            params.append(status)
+        if scope == "measured":
+            clauses.append("j.is_simulated = 0")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return render_template(
             "jobs.html",
             jobs=rows(
                 "SELECT j.job_id, j.status, j.attempt, j.max_attempts, j.trigger, "
                 "j.duration_ms, j.error_class, j.error_kind, j.error_message, "
-                "j.queued_at, j.finished_at, j.sla_breached, j.worker, "
+                "j.queued_at, j.finished_at, j.sla_breached, j.worker, j.is_simulated, "
                 "m.project_code, m.model_key, r.revision_label "
                 "FROM jobs j "
                 "JOIN model_revisions r ON r.revision_id = j.revision_id "
                 "JOIN models m ON m.model_id = r.model_id "
-                f"{clause} ORDER BY j.job_id DESC", params),
-            status=status, page="jobs")
+                f"{where} ORDER BY j.job_id DESC LIMIT 400", params),
+            counts=db.query_one(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN is_simulated = 0 THEN 1 ELSE 0 END) AS measured "
+                "FROM jobs"),
+            status=status, scope=scope, page="jobs")
 
     @app.route("/jobs/<int:job_id>")
     def page_job(job_id: int):
@@ -216,23 +242,143 @@ def create_app(config: Config, db: Database) -> Flask:
 
     @app.route("/catalog")
     def page_catalog():
+        # Same convention as the jobs page: measured models by default, the
+        # whole fleet one click away, never silently blended.
+        scope = request.args.get("scope", "measured")
+        only_measured = "AND c.is_simulated = 0" if scope == "measured" else ""
+        blocked_measured = "AND m.is_simulated = 0" if scope == "measured" else ""
         return render_template(
             "catalog.html",
             models=rows(
-                "SELECT c.*, p.project_name, p.subscriber_count "
+                "SELECT c.*, p.project_name, p.subscriber_count, p.district "
                 "FROM v_model_currency c "
                 "JOIN projects p ON p.project_code = c.project_code "
-                "ORDER BY c.project_code, c.model_key"),
+                f"WHERE 1 = 1 {only_measured} "
+                "ORDER BY c.is_simulated, c.project_code, c.model_key"),
             blocked=rows(
-                "SELECT m.project_code, m.model_key, r.revision_label, r.status, "
-                "r.received_at, j.job_id, j.error_class, j.error_message "
+                "SELECT m.project_code, m.model_key, m.is_simulated, r.revision_label, "
+                "r.status, r.received_at, j.job_id, j.error_class, j.error_message "
                 "FROM model_revisions r "
                 "JOIN models m ON m.model_id = r.model_id "
                 "JOIN jobs j ON j.job_id = ("
                 "  SELECT MAX(job_id) FROM jobs WHERE revision_id = r.revision_id) "
-                "WHERE r.status IN ('FAILED','QUARANTINED') "
-                "ORDER BY r.received_at DESC"),
-            page="catalog")
+                f"WHERE r.status IN ('FAILED','QUARANTINED') {blocked_measured} "
+                "ORDER BY m.is_simulated, r.received_at DESC LIMIT 200"),
+            counts=db.query_one(
+                "SELECT COUNT(*) AS total, "
+                "SUM(CASE WHEN is_simulated = 0 THEN 1 ELSE 0 END) AS measured "
+                "FROM models"),
+            scope=scope, page="catalog")
+
+    @app.route("/packages")
+    def page_packages():
+        project = request.args.get("project", "")
+        verdict = request.args.get("verdict", "")
+        board = awp.package_board(db, project_code=project or None)
+        summary = awp.board_summary(board)
+        if verdict == "DATA":
+            # Not a verdict, a cause: every package the model data is
+            # holding up, whichever verdict it landed on.
+            board = [p for p in board if "ATTRIBUTES_COMPLETE" in p["blockers"]]
+        elif verdict:
+            board = [p for p in board if p["verdict"] == verdict]
+        return render_template(
+            "packages.html",
+            board=board, summary=summary, verdict=verdict, project=project,
+            projects=rows("SELECT DISTINCT project_code FROM v_work_package "
+                          "ORDER BY project_code"),
+            page="packages")
+
+    @app.route("/packages/<path:iwp>")
+    def page_package(iwp: str):
+        detail = awp.package_detail(db, iwp)
+        if detail is None:
+            abort(404)
+        return render_template("package.html", **detail, page="packages")
+
+    @app.route("/handover")
+    def page_handover():
+        project = request.args.get("project", "") or None
+        return render_template(
+            "handover.html",
+            feeds=handover.catalog(db, project),
+            completeness=handover.completeness(db, project),
+            integration=handover.integration_status(db),
+            project=project or "",
+            projects=rows("SELECT DISTINCT project_code FROM v_work_package "
+                          "ORDER BY project_code"),
+            page="handover")
+
+    @app.route("/handover/feed/<key>")
+    def download_feed(key: str):
+        """Generated on request, so a download is never a stale export."""
+        if key not in handover.FEEDS_BY_KEY:
+            abort(404)
+        project = request.args.get("project", "") or None
+        columns, records = handover.build(db, key, project)
+        body, mimetype = handover.render(key, columns, records)
+        name = handover.FEEDS_BY_KEY[key].filename
+        if project:
+            stem, _, ext = name.rpartition(".")
+            name = f"{stem}-{project}.{ext}"
+        return Response(body, mimetype=mimetype, headers={
+            "Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.route("/handover/preview/<key>")
+    def preview_feed(key: str):
+        """First few records, so the page can show the shape of a feed."""
+        if key not in handover.FEEDS_BY_KEY:
+            abort(404)
+        project = request.args.get("project", "") or None
+        columns, records = handover.build(db, key, project)
+        body, _ = handover.render(key, columns, records[:8])
+        return Response(body, mimetype="text/plain; charset=utf-8")
+
+    @app.route("/tools")
+    def page_tools():
+        """The tool schemas, published rather than hidden.
+
+        An agent whose capabilities you cannot enumerate is one you cannot
+        review. These are the exact JSON Schemas handed to the model, in
+        the shape an MCP server advertises.
+        """
+        return render_template(
+            "tools.html",
+            tools=agent_tools.TOOLS,
+            schemas=json.dumps(agent_tools.schemas(), indent=2),
+            health=_agent().health(),
+            page="tools")
+
+    @app.route("/api/agent/health")
+    def api_agent_health():
+        health = _agent().health(refresh=request.args.get("refresh") == "1")
+        return jsonify({
+            "available": health.available,
+            "model": health.model,
+            "installed": health.installed or [],
+            "detail": health.detail,
+            "engine": "model" if health.available else "rules",
+        })
+
+    @app.route("/api/agent/chat", methods=["POST"])
+    def api_agent_chat():
+        payload = request.get_json(silent=True) or {}
+        question = (payload.get("question") or "").strip()
+        if not question:
+            return jsonify({"error": "Ask a question."}), 400
+
+        turn = _agent().ask(question, payload.get("history") or [])
+        return jsonify({
+            "reply": turn.reply,
+            "engine": turn.engine,
+            "model": turn.model,
+            "calls": turn.calls,
+            "viewer": turn.viewer,
+            "columns": turn.columns,
+            # Only tabular results are sent back for rendering; a dict of
+            # rollups reads better as the prose the tool already produced.
+            "rows": turn.data if isinstance(turn.data, list) else None,
+        })
 
     @app.route("/alerts")
     def page_alerts():
@@ -249,14 +395,20 @@ def create_app(config: Config, db: Database) -> Flask:
     def page_query():
         return render_template("query.html", presets=PRESET_QUERIES, page="query")
 
+    # "/viewer/" is accepted as well as "/viewer" because links to the viewer
+    # are assembled from parts, and a stray trailing slash 404ing in front of
+    # someone is a worse outcome than one extra route.
     @app.route("/viewer")
+    @app.route("/viewer/")
     @app.route("/viewer/<project_code>/<model_key>")
     def page_viewer(project_code: str | None = None, model_key: str | None = None):
+        # Simulated fleet models have a catalog row but no geometry on disk,
+        # so they are excluded here rather than offered and then 404ing.
         available = rows(
             "SELECT c.project_code, c.model_key, c.model_name, c.discipline, "
             "c.live_revision, c.component_count, c.triangle_count "
             "FROM v_model_currency c WHERE c.live_revision IS NOT NULL "
-            "ORDER BY c.triangle_count DESC")
+            "AND c.is_simulated = 0 ORDER BY c.triangle_count DESC")
         if not available:
             return render_template("viewer.html", available=[], selected=None,
                                    page="viewer")
@@ -348,16 +500,34 @@ def create_app(config: Config, db: Database) -> Flask:
 
     @app.route("/api/model/<project_code>/<model_key>/tree")
     def api_model_tree(project_code: str, model_key: str):
+        """Component list plus the attributes the viewer colours and filters by.
+
+        Carried on the tree request rather than fetched separately: the
+        viewer needs all of it before it can draw anything useful, and one
+        round trip is one fewer thing to be half-loaded during a demo.
+        """
         pub = live_publication(project_code, model_key)
         if pub is None:
             return jsonify({"error": "No live publication."}), 404
-        return jsonify({
-            "components": rows(
-                "SELECT component_id, tag, parent_tag, category, discipline, "
-                "has_geometry, triangle_count FROM components "
-                "WHERE revision_id = ? ORDER BY component_id",
-                (pub["revision_id"],))
-        })
+
+        components = rows(
+            """SELECT c.component_id, c.tag, c.parent_tag, c.category,
+                      c.discipline, c.has_geometry, c.triangle_count,
+                      v.iwp, v.cwa, v.lifecycle_status, v.planned_date,
+                      v.commissioning_system, v.system_code
+               FROM components c
+               LEFT JOIN v_component_packaging v
+                      ON v.component_id = c.component_id
+               WHERE c.revision_id = ?
+               ORDER BY c.component_id""",
+            (pub["revision_id"],))
+
+        # Package verdicts, so the viewer can paint readiness straight onto
+        # the geometry rather than making someone hold two tabs in their head.
+        verdicts = {p["iwp"]: {"verdict": p["verdict"], "summary": p["summary"]}
+                    for p in awp.package_board(db, model_key=model_key)}
+
+        return jsonify({"components": components, "packages": verdicts})
 
     @app.route("/api/model/<project_code>/<model_key>/component/<path:tag>")
     def api_component(project_code: str, model_key: str, tag: str):

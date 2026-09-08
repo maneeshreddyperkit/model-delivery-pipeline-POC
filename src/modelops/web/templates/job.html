@@ -17,6 +17,15 @@
   &middot; revision {{ job.revision_label }}
 </p>
 
+{% if job.is_simulated %}
+<div class="note">
+  <strong>Backfilled history.</strong>
+  This job is part of the simulated nightly fleet history, so it has an outcome
+  and a duration but no per-stage timeline, metrics or log behind it. Nothing was
+  converted. Use a job from the measured set to see the full stage detail.
+</div>
+{% endif %}
+
 {% if job.error_class %}
 <div class="panel" style="border-color:var(--err)">
   <h2 class="err-text">{{ job.error_class }} &middot; {{ job.error_kind }}</h2>

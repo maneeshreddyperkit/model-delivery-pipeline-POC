@@ -261,6 +261,109 @@ def cmd_alerts(args) -> int:
     return 0
 
 
+def cmd_handover(args) -> int:
+    """Write the outbound CDE feeds to the outbox.
+
+    The dashboard generates these on request; this is the same code run
+    on a schedule, which is how a real deployment would drop them for a
+    consumer to collect.
+    """
+    from . import handover
+
+    config, db = _open(args)
+    if args.feed and args.feed not in handover.FEEDS_BY_KEY:
+        print(f"Unknown feed {args.feed!r}. Available: "
+              f"{', '.join(handover.FEEDS_BY_KEY)}")
+        return 2
+
+    outbox = config.path("outbox")
+    outbox.mkdir(parents=True, exist_ok=True)
+    feeds = [handover.FEEDS_BY_KEY[args.feed]] if args.feed else handover.FEEDS
+    print(f"Writing {len(feeds)} feed(s) to {outbox}")
+    for feed in feeds:
+        columns, records = handover.build(db, feed.key, args.project)
+        body, _ = handover.render(feed.key, columns, records)
+        name = feed.filename
+        if args.project:
+            stem, _, ext = name.rpartition(".")
+            name = f"{stem}-{args.project}.{ext}"
+        path = outbox / name
+        path.write_text(body, encoding="utf-8")
+        print(f"  {name:<38} {len(records):>7,} record(s)  "
+              f"{path.stat().st_size:>9,} bytes  -> {feed.consumer}")
+
+    gaps = handover.completeness(db, args.project)
+    short = [a for a in gaps["overall"] if a["missing"]]
+    print()
+    if short:
+        print(f"Attribute gaps across {gaps['components']:,} published components:")
+        for a in short:
+            print(f"  {a['label']:<14} {a['pct']:>5.1f}%  "
+                  f"{a['missing']:,} missing  (blocks: {a['needed_by']})")
+        print("\n  These are listed component by component in attribute-exceptions.csv.")
+    else:
+        print(f"All handover attributes complete across "
+              f"{gaps['components']:,} published components.")
+    return 0
+
+
+def cmd_ask(args) -> int:
+    """Ask the assistant a question from the terminal.
+
+    Same agent the web panel uses. Useful for checking that a question
+    routes to the tool you expect without opening a browser, and for
+    warming the model before a demo.
+    """
+    from .agent import Agent
+
+    config, db = _open(args)
+    agent = Agent(db, model=args.model)
+    health = agent.health()
+
+    if args.warm:
+        if not health.available:
+            print(f"Cannot warm: {health.detail}")
+            return 1
+        print(f"Loading {health.model} into memory...")
+        print("Ready." if agent.client.warm() else "Warm-up failed.")
+        return 0
+
+    print(f"Engine: {health.model if health.available else 'rule-based fallback'}")
+    if health.detail:
+        print(f"        {health.detail}")
+    print()
+
+    turn = agent.ask(args.question)
+    for call in turn.calls:
+        args_text = ", ".join(f"{k}={v!r}" for k, v in (call["arguments"] or {}).items())
+        print(f"  -> {call['name']}({args_text})")
+    print()
+    print(turn.reply)
+
+    # The web panel draws rows as a table, so the reply carries prose only.
+    # In a terminal there is nothing else to draw them, so do it here.
+    if isinstance(turn.data, list) and turn.data and turn.columns:
+        print()
+        widths = {c: max(len(c), max(len(str(r.get(c, ""))) for r in turn.data[:15]))
+                  for c in turn.columns}
+        print("  " + "  ".join(c.ljust(widths[c]) for c in turn.columns))
+        for row in turn.data[:15]:
+            print("  " + "  ".join(str(row.get(c, "")).ljust(widths[c])
+                                   for c in turn.columns))
+        if len(turn.data) > 15:
+            print(f"  ... {len(turn.data) - 15} more row(s)")
+
+    if turn.viewer:
+        # Some tools name a model, others only change how the current one is
+        # drawn. Without a model the path has no trailing segment, and
+        # "/viewer/" with the slash still on it is a 404.
+        model = turn.viewer.get("model", "")
+        path = f"/viewer/{model}" if model else "/viewer"
+        query = "&".join(f"{k}={v}" for k, v in turn.viewer.items() if k != "model")
+        print(f"\n  Viewer: {path}{'?' + query if query else ''}")
+    return 0
+
+
 def cmd_replay(args) -> int:
     config, db = _open(args)
     try:
@@ -295,6 +398,26 @@ def cmd_adapters(args) -> int:
         status = "implemented" if adapter.implemented else "not configured"
         detail = adapter.name if adapter.implemented else f"{adapter.name} - requires {adapter.external_tool}"
         print(f"{ext:12s} {status:14s} {detail}")
+    return 0
+
+
+def cmd_backfill(args) -> int:
+    """Write simulated nightly history for the projects this POC does not convert."""
+    config, db = _open(args)
+    from .synth.history import backfill
+
+    result = backfill(config, db, days=args.days, seed=args.seed)
+    if not result["jobs"]:
+        print("Nothing to backfill.")
+        return 0
+
+    print(f"Backfilled {result['days']} days of nightly conversion history:")
+    print(f"  {result['models']:,} models across {result['projects']} projects")
+    print(f"  {result['jobs']:,} jobs, {result['live']:,} models left live")
+    print()
+    print("  Every row written is flagged is_simulated = 1. No job_steps and no")
+    print("  components were written, so per-stage timings and all engineering")
+    print("  content on the dashboard remain measured from real conversions.")
     return 0
 
 
@@ -343,6 +466,9 @@ def cmd_serve(args) -> int:
     print(f"  Delivery root        : {config.path('published')}")
     print(BAR)
     print("  Bound to 127.0.0.1 (this machine only). Ctrl+C to stop.\n")
+    if args.reload:
+        app.config["TEMPLATES_AUTO_RELOAD"] = True
+        app.jinja_env.auto_reload = True
     app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)
     return 0
 
@@ -354,10 +480,17 @@ def cmd_demo(args) -> int:
         ("Generating engineering models", lambda a: cmd_generate(a)),
         ("Scanning inbox", lambda a: cmd_scan(a)),
         ("Processing delivery queue", lambda a: cmd_run(a)),
+        ("Backfilling fleet history", lambda a: cmd_backfill(a)),
         ("Simulating viewer consumption", lambda a: cmd_simulate_usage(a)),
+        ("Publishing handover feeds", lambda a: cmd_handover(a)),
+        # Re-evaluated last, so the rules see the whole fleet rather than
+        # only the models this machine converted a moment ago.
+        ("Evaluating alert rules", lambda a: cmd_alerts(a)),
     ]
     args.force = True
     args.quiet = False
+    args.feed = None
+    args.project = None
 
     for i, (title, fn) in enumerate(steps, start=1):
         print(f"\n{BAR}\n  STEP {i}/{len(steps)}  {title}\n{BAR}")
@@ -418,6 +551,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("adapters", help="List registered source-format adapters")
     sp.set_defaults(func=cmd_adapters)
 
+    sp = sub.add_parser("ask", help="Ask the local assistant a question")
+    sp.add_argument("question", nargs="?", default="what is this pipeline for?")
+    sp.add_argument("--model", help="Override the Ollama model")
+    sp.add_argument("--warm", action="store_true",
+                    help="Load the model into memory and exit")
+    sp.set_defaults(func=cmd_ask)
+
+    sp = sub.add_parser("handover", help="Write outbound CDE feeds to the outbox")
+    sp.add_argument("--feed", help="One feed key; omit to write all")
+    sp.add_argument("--project", help="Limit to one project code")
+    sp.set_defaults(func=cmd_handover)
+
     sp = sub.add_parser("replay", help="Re-queue a failed job")
     sp.add_argument("--job", type=int, required=True)
     sp.add_argument("--run", action="store_true", help="Process it immediately")
@@ -429,6 +574,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--model", required=True)
     sp.set_defaults(func=cmd_rollback)
 
+    sp = sub.add_parser("backfill", help="Write simulated fleet run history")
+    sp.add_argument("--days", type=int, default=14)
+    sp.add_argument("--seed", type=int, default=424242)
+    sp.set_defaults(func=cmd_backfill)
+
     sp = sub.add_parser("simulate-usage", help="Generate viewer consumption statistics")
     sp.add_argument("--days", type=int, default=14)
     sp.add_argument("--seed", type=int, default=7)
@@ -436,6 +586,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("serve", help="Run the operations dashboard and 3D viewer")
     sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--reload", action="store_true",
+                    help="Re-read templates on every request (development)")
     sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("demo", help="Run the entire scripted demonstration")

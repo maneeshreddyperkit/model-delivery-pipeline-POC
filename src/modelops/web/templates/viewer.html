@@ -37,6 +37,19 @@
       the GPU draws without changing the tag tree.
     </p>
 
+    <h2 style="margin-top:18px">Colour by</h2>
+    <select id="colour-select" style="width:100%">
+      <option value="category">Category</option>
+      <option value="lifecycle">Install status</option>
+      <option value="readiness">Package readiness</option>
+      <option value="discipline">Discipline</option>
+      <option value="package">Work package</option>
+      <option value="commissioning">Commissioning system</option>
+    </select>
+    <p class="msg" id="colour-note" style="margin-top:6px">
+      The colours the model was published with, one per component category.
+    </p>
+
     <h2 style="margin-top:18px">Components</h2>
     <input type="text" id="tag-filter" placeholder="Filter by tag or category"
            style="width:100%; margin-bottom:8px">
@@ -47,6 +60,21 @@
   <div class="viewer-canvas" id="canvas-host">
     <div class="viewer-status" id="status">Loading model...</div>
     <div class="viewer-hud" id="hud"></div>
+
+    <!-- Set when the work packages page hands a package over to look at -->
+    <div class="viewer-focus" id="focus-banner" hidden></div>
+
+    <!-- 4D: planned install dates against what is actually installed -->
+    <div class="viewer-timeline" id="timeline" hidden>
+      <button class="ghost icon" id="tl-play" title="Play the sequence"><svg class="i"><use href="#i-play"/></svg></button>
+      <input type="range" id="tl-range" min="0" max="100" value="100" step="1">
+      <div class="tl-readout">
+        <strong id="tl-date">-</strong>
+        <span id="tl-counts" class="hint"></span>
+      </div>
+      <button class="ghost" id="tl-off">Off</button>
+    </div>
+    <button class="ghost viewer-timeline-toggle" id="tl-on" hidden>4D sequence</button>
   </div>
 
   <!-- ---------------- right: attributes ---------------- -->
@@ -56,7 +84,7 @@
       <p class="msg">Click a component in the model, or pick one from the list.</p>
     </div>
     <div style="margin-top:16px">
-      <button class="ghost" id="isolate" disabled>Isolate</button>
+      <button class="ghost" id="isolate" disabled><svg class="i"><use href="#i-isolate"/></svg>Isolate</button>
       <button class="ghost" id="reset-view">Reset view</button>
     </div>
     <div id="legend-box" style="margin-top:20px"></div>

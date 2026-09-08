@@ -31,6 +31,15 @@ from . import plant
 
 # ---------------------------------------------------------------------
 # Projects the POC pretends to serve.
+#
+# The first three carry the models this pipeline physically converts. The
+# rest exist so the platform reads at the scale it would really run at:
+# several districts, a mix of project sizes, and a subscriber base in the
+# thousands rather than the hundreds. Their run history is backfilled by
+# synth/history.py and flagged as simulated everywhere it lands.
+#
+# `converts_locally` is what tells the backfill which projects to leave
+# alone, so simulated rows can never be written over measured ones.
 # ---------------------------------------------------------------------
 PROJECTS = [
     {
@@ -39,6 +48,7 @@ PROJECTS = [
         "district": "Kiewit Nuclear Solutions",
         "sla_minutes": 20,
         "subscriber_count": 1450,
+        "converts_locally": True,
     },
     {
         "project_code": "KNS-TB2",
@@ -46,6 +56,7 @@ PROJECTS = [
         "district": "Kiewit Nuclear Solutions",
         "sla_minutes": 30,
         "subscriber_count": 980,
+        "converts_locally": True,
     },
     {
         "project_code": "KNS-BOP",
@@ -53,6 +64,47 @@ PROJECTS = [
         "district": "Kiewit Nuclear Solutions",
         "sla_minutes": 45,
         "subscriber_count": 610,
+        "converts_locally": True,
+    },
+    {
+        "project_code": "KNS-RWB",
+        "project_name": "Radwaste Building",
+        "district": "Kiewit Nuclear Solutions",
+        "sla_minutes": 45,
+        "subscriber_count": 240,
+        "converts_locally": False,
+    },
+    {
+        "project_code": "KNS-FHB",
+        "project_name": "Fuel Handling Building",
+        "district": "Kiewit Nuclear Solutions",
+        "sla_minutes": 30,
+        "subscriber_count": 185,
+        "converts_locally": False,
+    },
+    {
+        "project_code": "KPD-S41",
+        "project_name": "Sherman County 345kV Substation",
+        "district": "Kiewit Power Delivery",
+        "sla_minutes": 60,
+        "subscriber_count": 130,
+        "converts_locally": False,
+    },
+    {
+        "project_code": "KIN-H2A",
+        "project_name": "Gulf Coast Hydrogen - Train A",
+        "district": "Kiewit Industrial",
+        "sla_minutes": 60,
+        "subscriber_count": 95,
+        "converts_locally": False,
+    },
+    {
+        "project_code": "KIE-WTP",
+        "project_name": "Regional Water Treatment Expansion",
+        "district": "Kiewit Infrastructure Engineers",
+        "sla_minutes": 90,
+        "subscriber_count": 75,
+        "converts_locally": False,
     },
 ]
 
@@ -84,11 +136,13 @@ DROPS = [
              note="Baseline good model"),
     DropSpec("KNS-BOP", "BOP-STEEL-U30", "BOP Structural Steel", "STRUCTURAL", "RevA",
              size="small", note="Baseline good model"),
+    DropSpec("KNS-TB2", "TB2-HVAC-U20", "Unit 20 Ventilation", "HVAC", "RevB",
+             note="Baseline good model - ductwork, dampers and diffusers"),
 
     DropSpec("KNS-BOP", "BOP-PIPE-U30", "BOP Piping", "PIPING", "RevB",
              defect="flaky_converter", size="small",
              note="Converter fails on first attempt, succeeds on retry"),
-    DropSpec("KNS-NI1", "NI1-HVAC-U10", "Unit 10 HVAC", "PIPING", "RevA",
+    DropSpec("KNS-NI1", "NI1-HVAC-U10", "Unit 10 HVAC", "HVAC", "RevA",
              defect="corrupt_archive", size="small",
              note="Truncated upload - permanent failure, must not retry"),
     DropSpec("KNS-TB2", "TB2-EQUIP-U20", "Unit 20 Equipment", "EQUIPMENT", "RevA",
@@ -121,12 +175,14 @@ SIZE_PROFILES = {
         "STRUCTURAL": dict(bays_x=4, bays_y=3, levels=2),
         "EQUIPMENT": dict(count=8),
         "ELECTRICAL": dict(runs=4),
+        "HVAC": dict(runs=3, air_handlers=1),
     },
     "normal": {
         "PIPING": dict(lines=34, spools_per_line=16),
         "STRUCTURAL": dict(bays_x=16, bays_y=10, levels=6),
         "EQUIPMENT": dict(count=72),
         "ELECTRICAL": dict(runs=24),
+        "HVAC": dict(runs=18, air_handlers=4),
     },
 }
 
@@ -196,6 +252,13 @@ def build_drop(spec: DropSpec, out_dir: Path, seed: int) -> Path:
     kwargs = SIZE_PROFILES[spec.size][spec.discipline]
     model = builder(rng, spec.project_code, spec.model_key, spec.model_name,
                     spec.revision, **kwargs)
+
+    # Work packaging is applied to the finished model, then defects on top
+    # of that. Order matters: thin_metadata strips attributes, and it has
+    # to be able to strip packaging attributes too, otherwise the one
+    # model meant to demonstrate incomplete data would arrive with a
+    # perfect packaging hierarchy.
+    plant.assign_work_packaging(model, rng)
 
     _apply_model_defect(model, spec.defect, rng)
     path = model.write(out_dir)

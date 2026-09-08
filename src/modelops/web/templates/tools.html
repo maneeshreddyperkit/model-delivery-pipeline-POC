@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Assistant tools - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Assistant tools</h1>
+<p class="sub">
+  Everything the assistant is able to do, listed. An agent whose capabilities
+  you cannot enumerate is one you cannot review, so the schemas below are the
+  exact objects handed to the model, not a description of them. The shape is
+  the one an MCP server advertises, which means this tool layer could sit
+  behind an MCP endpoint and be pointed at a real viewer API without any of
+  these definitions changing.
+</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Tools</div>
+    <div class="value">{{ tools | length }}</div>
+    <div class="foot">{{ tools | selectattr('name', 'in', ['isolate_in_viewer', 'color_by']) | list | length }} of them change the 3D view</div>
+  </div>
+  <div class="kpi ok">
+    <div class="label">Write access</div>
+    <div class="value">None</div>
+    <div class="foot">read-only by construction, not by prompt</div>
+  </div>
+  <div class="kpi {{ 'ok' if health.available else 'attention' }}">
+    <div class="label">Language model</div>
+    <div class="value" style="font-size:17px">
+      {{ health.model if health.available else 'Not installed' }}</div>
+    <div class="foot">{{ 'local, via Ollama' if health.available
+                         else 'rule-based fallback in use' }}</div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>The read-only boundary is in the code, not the prompt.</strong>
+  There is no tool that requeues a job, edits an attribute, rolls back a
+  publication or writes a file, and the connection the tools run against
+  cannot perform one. A boundary a model is merely asked to respect is not a
+  boundary, and this catalog is what 3,000 people open a viewer against.
+  {% if not health.available %}
+    Ollama is not installed on this machine, so questions are routed to the
+    same tools by pattern matching instead. The panel says which of the two
+    answered, every time. What the model adds is tolerance for how a question
+    is phrased; the tools, the numbers and the viewer control are the same
+    either way.
+  {% endif %}
+</div>
+
+<div class="panel">
+  <table>
+    <thead><tr>
+      <th style="width:16%">Tool</th><th style="width:42%">What it does</th>
+      <th>Arguments</th><th>Effect</th>
+    </tr></thead>
+    <tbody>
+    {% for t in tools %}
+      <tr>
+        <td class="mono">{{ t.name }}</td>
+        <td class="msg">{{ t.description }}</td>
+        <td class="msg">
+          {% for name, spec in t.parameters.properties.items() %}
+            <div>
+              <span class="mono">{{ name }}</span>
+              {% if name in t.parameters.required %}
+                <span class="badge b-blocked">required</span>
+              {% endif %}
+              {% if spec.enum %}
+                <div class="hint mono">{{ spec.enum | join(' | ') }}</div>
+              {% endif %}
+            </div>
+          {% else %}
+            <span class="hint">none</span>
+          {% endfor %}
+        </td>
+        <td>
+          {% if t.name in ('isolate_in_viewer', 'color_by') %}
+            <span class="badge b-info">changes the 3D view</span>
+          {% else %}
+            <span class="badge b-ok">reads the catalog</span>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Raw schemas</h2>
+  <p class="msg" style="margin-bottom:12px">
+    Copy this straight into any tool-calling client. It is generated from the
+    tool registry at request time, so it cannot drift from what the assistant
+    actually runs.
+  </p>
+  <pre class="code">{{ schemas }}</pre>
+</div>
+
+{% endblock %}

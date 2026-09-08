@@ -91,7 +91,23 @@ def stage_latency(db: Database) -> list[dict]:
 
 
 def overview(db: Database) -> dict:
-    """Headline numbers for the dashboard."""
+    """Headline numbers for the dashboard.
+
+    Two scopes, kept apart on purpose:
+
+    * **Fleet** covers every job in the catalog, including the backfilled
+      nightly history from other districts. Throughput, success rate and
+      how many models are live are fleet figures, because that is the
+      question an operator is actually asking.
+
+    * **Measured** covers only what this machine converted, where the
+      bytes were weighed rather than sampled. Every payload number is
+      measured, because a compression claim you did not measure is not a
+      claim worth making.
+
+    Anything returned under a ``measured_`` prefix filters on
+    ``is_simulated = 0``. See synth/history.py for what that flag means.
+    """
     totals = db.query_one(
         "SELECT COUNT(*) AS total,"
         " SUM(CASE WHEN status='SUCCEEDED' THEN 1 ELSE 0 END) AS succeeded,"
@@ -107,15 +123,32 @@ def overview(db: Database) -> dict:
     terminal = (totals["succeeded"] or 0) + (totals["failed"] or 0) + (totals["quarantined"] or 0)
     durations = [float(r["duration_ms"]) for r in db.query(
         "SELECT duration_ms FROM jobs WHERE status='SUCCEEDED' AND duration_ms IS NOT NULL")]
+    measured_durations = [float(r["duration_ms"]) for r in db.query(
+        "SELECT duration_ms FROM jobs WHERE status='SUCCEEDED' "
+        "AND duration_ms IS NOT NULL AND is_simulated = 0")]
 
+    # Fleet: everything currently live, simulated history included.
     published = db.query_one(
+        "SELECT COUNT(*) AS models, COALESCE(SUM(component_count),0) AS components,"
+        " COALESCE(SUM(triangle_count),0) AS triangles"
+        " FROM publications WHERE is_current = 1") or {}
+
+    # Measured: only models this pipeline actually converted and weighed.
+    # Every byte figure below comes from here, never from the fleet scope.
+    measured = db.query_one(
         "SELECT COUNT(*) AS models, COALESCE(SUM(component_count),0) AS components,"
         " COALESCE(SUM(triangle_count),0) AS triangles,"
         " COALESCE(SUM(published_bytes),0) AS published_bytes,"
         " COALESCE(SUM(wire_bytes),0) AS wire_bytes,"
         " COALESCE(SUM(naive_bytes),0) AS naive_bytes,"
         " COALESCE(SUM(source_bytes),0) AS source_bytes"
-        " FROM publications WHERE is_current = 1") or {}
+        " FROM publications WHERE is_current = 1 AND is_simulated = 0") or {}
+
+    simulated_jobs = db.scalar(
+        "SELECT COUNT(*) FROM jobs WHERE is_simulated = 1", default=0)
+    history_days = db.scalar(
+        "SELECT COUNT(DISTINCT date(queued_at)) FROM jobs WHERE is_simulated = 1",
+        default=0)
 
     subscribers = db.scalar(
         "SELECT COALESCE(SUM(subscriber_count),0) FROM projects WHERE is_active = 1",
@@ -126,10 +159,10 @@ def overview(db: Database) -> dict:
         "SELECT COUNT(*) FROM alerts WHERE resolved_at IS NULL AND severity = 'CRITICAL'",
         default=0)
 
-    source_bytes = published["source_bytes"] or 0
-    published_bytes = published["published_bytes"] or 0
-    wire_bytes = published["wire_bytes"] or 0
-    naive_bytes = published["naive_bytes"] or 0
+    source_bytes = measured["source_bytes"] or 0
+    published_bytes = measured["published_bytes"] or 0
+    wire_bytes = measured["wire_bytes"] or 0
+    naive_bytes = measured["naive_bytes"] or 0
 
     return {
         "jobs_total": total,
@@ -147,6 +180,17 @@ def overview(db: Database) -> dict:
         "models_live": published["models"] or 0,
         "components_live": published["components"] or 0,
         "triangles_live": published["triangles"] or 0,
+        # Scope markers, so a page can state which figures were measured.
+        "measured_avg_duration_s": (round(statistics.fmean(measured_durations) / 1000.0, 2)
+                                    if measured_durations else 0.0),
+        "measured_p95_duration_s": (round(percentile(measured_durations, 0.95) / 1000.0, 2)
+                                    if measured_durations else 0.0),
+        "measured_models": measured["models"] or 0,
+        "measured_components": measured["components"] or 0,
+        "measured_triangles": measured["triangles"] or 0,
+        "simulated_jobs": simulated_jobs,
+        "measured_jobs": total - simulated_jobs,
+        "history_days": history_days,
         "published_bytes": published_bytes,
         "wire_bytes": wire_bytes,
         "naive_bytes": naive_bytes,
@@ -169,6 +213,38 @@ def _quarantine_files(db: Database):
         p = Path(row["source_path"])
         if p.exists():
             yield p
+
+
+def daily_throughput(db: Database, days: int = 21) -> list[dict]:
+    """Jobs per day across the whole fleet, oldest first (chart order)."""
+    return [dict(r) for r in db.query(
+        "SELECT * FROM (SELECT * FROM v_daily_throughput "
+        "ORDER BY run_date DESC LIMIT ?) ORDER BY run_date", (days,))]
+
+
+def district_health(db: Database) -> list[dict]:
+    """Reliability by district.
+
+    Subscribers are counted in a separate subquery rather than summed
+    alongside the job join, which would multiply each project's headcount
+    by its number of jobs.
+    """
+    return [dict(r) for r in db.query(
+        "SELECT d.district, d.projects, d.subscribers, "
+        "  COUNT(DISTINCT m.model_id)                            AS models, "
+        "  COUNT(j.job_id)                                       AS jobs, "
+        "  SUM(CASE WHEN j.status='SUCCEEDED' THEN 1 ELSE 0 END) AS succeeded, "
+        "  ROUND(100.0 * SUM(CASE WHEN j.status='SUCCEEDED' THEN 1 ELSE 0 END) "
+        "        / NULLIF(COUNT(j.job_id), 0), 1)                AS success_rate_pct "
+        "FROM (SELECT district, COUNT(*) AS projects, "
+        "             SUM(subscriber_count) AS subscribers "
+        "      FROM projects WHERE is_active = 1 GROUP BY district) d "
+        "JOIN projects p          ON p.district    = d.district AND p.is_active = 1 "
+        "LEFT JOIN models m       ON m.project_code = p.project_code "
+        "LEFT JOIN model_revisions r ON r.model_id  = m.model_id "
+        "LEFT JOIN jobs j         ON j.revision_id  = r.revision_id "
+        "GROUP BY d.district, d.projects, d.subscribers "
+        "ORDER BY jobs DESC")]
 
 
 def project_health(db: Database) -> list[dict]:
@@ -273,20 +349,34 @@ class AlertEngine:
             entity_type="pipeline", entity_id="global")]
 
     def _sla_breaches(self) -> list[Alert]:
+        """One alert per project per day, not one per breached job.
+
+        A fleet of a hundred nightly conversions will breach an SLA
+        somewhere most nights. Raising an alert for each one produces a
+        page nobody reads, which is worse than no alerting at all. The
+        operator question is "is this project slipping", so that is the
+        grain the rule works at.
+        """
         rows = self.db.query(
-            "SELECT j.job_id, j.duration_ms, m.model_key, m.project_code, p.sla_minutes "
+            "SELECT m.project_code, p.sla_minutes, date(j.queued_at) AS run_date, "
+            "COUNT(*) AS breaches, MAX(j.duration_ms) AS worst_ms, "
+            "COUNT(DISTINCT m.model_key) AS models "
             "FROM jobs j JOIN model_revisions r ON r.revision_id = j.revision_id "
             "JOIN models m ON m.model_id = r.model_id "
             "JOIN projects p ON p.project_code = m.project_code "
-            "WHERE j.sla_breached = 1 AND j.finished_at IS NOT NULL")
+            "WHERE j.sla_breached = 1 AND j.finished_at IS NOT NULL "
+            "GROUP BY m.project_code, date(j.queued_at) "
+            "ORDER BY run_date DESC LIMIT 20")
         return [Alert(
-            rule_code="SLA_BREACH", severity=WARNING,
-            subject=f"{r['project_code']}/{r['model_key']} missed its "
-                    f"{r['sla_minutes']}-minute delivery SLA",
-            body=f"Job {r['job_id']} finished outside the SLA window "
-                 f"({(r['duration_ms'] or 0) / 1000.0:.1f}s of processing).",
-            dedupe_key=f"sla:{r['job_id']}",
-            entity_type="job", entity_id=str(r["job_id"])) for r in rows]
+            rule_code="SLA_BREACH",
+            severity=CRITICAL if r["breaches"] >= 5 else WARNING,
+            subject=f"{r['project_code']}: {r['breaches']} model(s) missed the "
+                    f"{r['sla_minutes']}-minute delivery SLA on {r['run_date']}",
+            body=f"{r['breaches']} job(s) across {r['models']} model(s) finished "
+                 f"outside the SLA window. Slowest took "
+                 f"{(r['worst_ms'] or 0) / 60000.0:.1f} minutes.",
+            dedupe_key=f"sla:{r['project_code']}:{r['run_date']}",
+            entity_type="project", entity_id=r["project_code"]) for r in rows]
 
     def _qa_blocked(self) -> list[Alert]:
         rows = self.db.query(

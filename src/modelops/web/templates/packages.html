@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block title %}Work packages - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<h1>Installation work packages</h1>
+<p class="sub">
+  Every package derived from the models that are live in the viewer, with a
+  readiness verdict against four constraints. This page is the reason the
+  quality gate exists: a model whose attributes are incomplete cannot be planned
+  from, however good it looks.
+</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Packages</div>
+    <div class="value">{{ summary.total }}</div>
+    <div class="foot">across {{ projects | length }} project(s)</div>
+  </div>
+  <div class="kpi ok">
+    <div class="label">Ready to release</div>
+    <div class="value">{{ summary.ready }}</div>
+    <div class="foot">{{ summary.hours_ready | num }} craft hours</div>
+  </div>
+  <div class="kpi warn {{ 'attention' if summary.blocked }}">
+    <div class="label">Blocked</div>
+    <div class="value">{{ summary.blocked }}</div>
+    <div class="foot">{{ summary.hours_blocked | num }} craft hours held</div>
+  </div>
+  <div class="kpi {{ 'attention' if summary.attribute_gaps }}">
+    <div class="label">Incomplete attributes</div>
+    <div class="value">{{ summary.attribute_gaps }}</div>
+    <div class="foot">{{ summary.blocked_on_data }} blocked on data alone</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Complete</div>
+    <div class="value">{{ summary.complete }}</div>
+    <div class="foot">{{ summary.complete_with_gaps }} handed over with gaps</div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Read the fourth tile first.</strong>
+  {{ summary.attribute_gaps }} packages carry components with attributes that
+  were never populated in the source model. {{ summary.blocked_on_data }} of them
+  are blocked on nothing else: the steel is up, the materials are on site, the
+  package ahead is done, and a planner still cannot schedule, cost or report
+  against them. Another {{ summary.complete_with_gaps }} were installed and
+  handed over with those gaps intact, which is the same defect discovered too
+  late to fix cheaply. This is the category of blocker that no site walk finds
+  and that a pipeline measuring attribute integrity eliminates before the model
+  ever reaches a planner.
+</div>
+
+<div class="row" style="margin-bottom:16px">
+  <a class="btn {{ '' if verdict else 'ghost' }}" href="/packages?project={{ project }}">All</a>
+  {% for v in ['READY', 'BLOCKED', 'COMPLETE'] %}
+    <a class="btn ghost" href="/packages?project={{ project }}&verdict={{ v }}"
+       style="{{ 'border-color:var(--k-yellow)' if verdict == v else '' }}">{{ v | title }}</a>
+  {% endfor %}
+  <a class="btn ghost" href="/packages?project={{ project }}&verdict=DATA"
+     style="{{ 'border-color:var(--k-yellow)' if verdict == 'DATA' else '' }}">Data gaps</a>
+  <div class="spacer"></div>
+  <a class="btn ghost" href="/packages?verdict={{ verdict }}"
+     style="{{ '' if project else 'border-color:var(--k-yellow)' }}">All projects</a>
+  {% for p in projects %}
+    <a class="btn ghost" href="/packages?project={{ p.project_code }}&verdict={{ verdict }}"
+       style="{{ 'border-color:var(--k-yellow)' if project == p.project_code else '' }}">
+      {{ p.project_code }}</a>
+  {% endfor %}
+</div>
+
+<div class="panel" x-data="packageTable" x-cloak>
+  <div class="row" style="margin-bottom:14px">
+    <label class="search">
+      <svg class="i"><use href="#i-search"/></svg>
+      <input type="search" x-model="q" placeholder="Filter by package, CWP, crew or discipline">
+    </label>
+    <button class="ghost" x-show="q" @click="q = ''">Clear</button>
+    <div class="spacer"></div>
+    <span class="hint" x-text="`${shown} of ${total} packages`"></span>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Package</th><th>CWP</th><th>Discipline</th>
+      <th class="num sortable" :class="arrow('seq')" @click="sortBy('seq')">Seq</th>
+      <th class="sortable" :class="arrow('planned')" @click="sortBy('planned')">Planned</th>
+      <th>Crew</th>
+      <th class="num sortable" :class="arrow('items')" @click="sortBy('items')">Items</th>
+      <th class="num sortable" :class="arrow('weight')" @click="sortBy('weight')">Weight</th>
+      <th class="num sortable" :class="arrow('hours')" @click="sortBy('hours')">Hours</th>
+      <th class="num sortable" style="width:12%" :class="arrow('progress')" @click="sortBy('progress')">Installed</th>
+      <th>Verdict</th><th>Constraint</th>
+    </tr></thead>
+    <tbody>
+    {% for p in board %}
+      <tr class="{{ 'attention' if 'ATTRIBUTES_COMPLETE' in p.blockers }}"
+          data-search="{{ (p.iwp ~ ' ' ~ p.cwp ~ ' ' ~ p.discipline ~ ' ' ~ p.crew ~ ' ' ~ p.verdict) | lower }}"
+          data-seq="{{ p.poc_sequence }}" data-planned="{{ p.planned_date }}"
+          data-items="{{ p.components }}" data-weight="{{ p.weight_kg or 0 }}"
+          data-hours="{{ p.estimated_hours or 0 }}" data-progress="{{ p.progress_pct }}">
+        <td class="nowrap">
+          <a class="mono" href="/packages/{{ p.iwp }}">{{ p.iwp }}</a>
+          {% if 'ATTRIBUTES_COMPLETE' in p.blockers %}
+            <span class="badge b-blocked" title="Attributes incomplete">DATA</span>
+          {% endif %}
+        </td>
+        <td class="mono msg nowrap">{{ p.cwp }}</td>
+        <td class="msg">{{ p.discipline }}</td>
+        <td class="num">{{ p.poc_sequence }}</td>
+        <td class="msg nowrap">{{ p.planned_date }}</td>
+        <td class="msg">{{ p.crew }}</td>
+        <td class="num">{{ p.components | num }}</td>
+        <td class="num mono nowrap">{{ '{:,.0f}'.format(p.weight_kg or 0) }} kg</td>
+        <td class="num">{{ '{:,.0f}'.format(p.estimated_hours or 0) }}</td>
+        <td>
+          <div class="bar {{ 'ok' if p.progress_pct >= 100 else '' }}">
+            <span style="width:{{ p.progress_pct }}%"></span>
+          </div>
+          <div class="hint">{{ p.progress_pct }}%</div>
+        </td>
+        <td>
+          <span class="badge {{ 'b-ready' if p.verdict == 'READY'
+                                else 'b-complete' if p.verdict == 'COMPLETE'
+                                else 'b-blocked' }}">{{ p.verdict }}</span>
+        </td>
+        <td class="msg">{{ p.summary }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="12" class="empty">No packages match.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <div class="empty" x-show="total && !shown">No packages match that filter.</div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Filtering and sorting run against the rows already on the page. The verdict
+// and project filters above stay server-side because they are shareable in a
+// URL; this is the narrowing you do while someone is watching, and a round
+// trip per keystroke would be visible.
+//
+// Alpine owns the input, the counter and the sort indicators. It deliberately
+// does not own the row visibility: two hundred per-row reactive effects to
+// express one substring test is the slow way round, and one pass over a cached
+// array of rows is both faster and easier to reason about.
+document.addEventListener('alpine:init', () => {
+  Alpine.data('packageTable', () => {
+    // Row elements are kept out of the reactive state on purpose. Alpine
+    // deep-proxies whatever it is given, and proxying two hundred DOM nodes
+    // is both slow and a good way to get surprising behaviour.
+    let body = null;
+    let rows = [];
+
+    return {
+      q: '',
+      key: null,
+      dir: 1,
+      total: 0,
+      shown: 0,
+
+      init() {
+        body = this.$el.querySelector('tbody');
+        rows = Array.from(body.querySelectorAll('tr[data-search]'));
+        this.total = this.shown = rows.length;
+        this.$watch('q', (value) => this.filter(value));
+      },
+
+      filter(value) {
+        const needle = value.trim().toLowerCase();
+        let shown = 0;
+        for (const row of rows) {
+          const match = !needle || row.dataset.search.includes(needle);
+          row.hidden = !match;
+          if (match) shown += 1;
+        }
+        this.shown = shown;
+      },
+
+      sortBy(key) {
+        this.dir = this.key === key ? -this.dir : 1;
+        this.key = key;
+        // Every sortable column is numeric except the planned date, which
+        // sorts correctly as an ISO string.
+        const numeric = key !== 'planned';
+        const value = (row) => (numeric ? parseFloat(row.dataset[key]) || 0 : row.dataset[key]);
+        [...rows]
+          .sort((a, b) => {
+            const [x, y] = [value(a), value(b)];
+            return (x < y ? -1 : x > y ? 1 : 0) * this.dir;
+          })
+          .forEach((row) => body.appendChild(row));
+      },
+
+      arrow(key) {
+        return this.key !== key ? '' : this.dir > 0 ? 'sorted-asc' : 'sorted-desc';
+      },
+    };
+  });
+});
+</script>
+<script src="/static/vendor/lib/alpine.min.js" defer></script>
+{% endblock %}

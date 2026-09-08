@@ -8,28 +8,57 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>&#9635;</text></svg>">
 </head>
 <body>
+{% include "_icons.html" %}
 <header class="topbar">
   <a class="brand" href="/">
-    <span class="mark">&#9635;</span>
+    <svg class="mark"><use href="#i-brand"/></svg>
     <div>
       <strong>Model Delivery Pipeline</strong>
       <small>Local proof of concept</small>
     </div>
   </a>
   <nav>
-    <a href="/"        class="{{ 'on' if page == 'overview' }}">Operations</a>
-    <a href="/jobs"    class="{{ 'on' if page == 'jobs' }}">Jobs</a>
-    <a href="/catalog" class="{{ 'on' if page == 'catalog' }}">Catalog</a>
-    <a href="/viewer"  class="{{ 'on' if page == 'viewer' }}">Viewer</a>
-    <a href="/query"   class="{{ 'on' if page == 'query' }}">SQL</a>
+    <a href="/"         class="{{ 'on' if page == 'overview' }}"><svg class="i"><use href="#i-nav-operations"/></svg>Operations</a>
+    <a href="/jobs"     class="{{ 'on' if page == 'jobs' }}"><svg class="i"><use href="#i-nav-jobs"/></svg>Jobs</a>
+    <a href="/catalog"  class="{{ 'on' if page == 'catalog' }}"><svg class="i"><use href="#i-nav-catalog"/></svg>Catalog</a>
+    <a href="/packages" class="{{ 'on' if page == 'packages' }}"><svg class="i"><use href="#i-nav-packages"/></svg>Work packages</a>
+    <a href="/handover" class="{{ 'on' if page == 'handover' }}"><svg class="i"><use href="#i-nav-handover"/></svg>Handover</a>
+    <a href="/viewer"   class="{{ 'on' if page == 'viewer' }}"><svg class="i"><use href="#i-nav-viewer"/></svg>Viewer</a>
+    <a href="/query"    class="{{ 'on' if page == 'query' }}"><svg class="i"><use href="#i-nav-sql"/></svg>SQL</a>
   </nav>
-  <a class="secondary {{ 'on' if page in ('pipeline', 'alerts') }}" href="/pipeline">How it works</a>
+  <a class="secondary {{ 'on' if page in ('pipeline', 'alerts', 'tools') }}"
+     href="/pipeline"><svg class="i"><use href="#i-nav-docs"/></svg>How it works</a>
 </header>
 
 <main class="{% block main_class %}wrap{% endblock %}">
   {% block content %}{% endblock %}
 </main>
 
+<!-- Assistant. Talks to Ollama on this machine; nothing leaves it. -->
+<button class="assistant-launcher" id="assistant-launcher" title="Ask about this catalog">
+  <svg class="i"><use href="#i-ask"/></svg>
+  <span>Ask</span>
+</button>
+
+<section class="assistant-panel" id="assistant-panel" hidden aria-label="Assistant">
+  <header>
+    <strong>Assistant</strong>
+    <span class="badge" id="assistant-engine">checking</span>
+    <div class="spacer"></div>
+    <a class="hint" href="/tools">tools</a>
+    <button class="ghost icon" id="assistant-close" title="Close"><svg class="i"><use href="#i-close"/></svg></button>
+  </header>
+  <div class="assistant-log" id="assistant-log"></div>
+  <form id="assistant-form">
+    <input type="text" id="assistant-input" autocomplete="off"
+           placeholder="Ask about models, packages or data gaps">
+    <button type="submit">Send</button>
+  </form>
+</section>
+
+<script src="/static/vendor/lib/motion.min.js" defer></script>
+<script src="/static/motion.js" defer></script>
+<script src="/static/assistant.js" defer></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

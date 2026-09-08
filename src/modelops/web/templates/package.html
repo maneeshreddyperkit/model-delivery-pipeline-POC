@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}{{ package.iwp }} - Model Delivery Pipeline{% endblock %}
+{% block content %}
+
+<div class="row" style="margin-bottom:6px">
+  <h1 style="margin:0" class="mono">{{ package.iwp }}</h1>
+  <span class="badge {{ 'b-ready' if readiness.verdict == 'READY'
+                        else 'b-complete' if readiness.verdict == 'COMPLETE'
+                        else 'b-blocked' }}">{{ readiness.verdict }}</span>
+  <div class="spacer"></div>
+  <a class="btn" href="/viewer/{{ package.project_code }}/{{ package.model_key }}?iwp={{ package.iwp }}">
+    <svg class="i"><use href="#i-isolate"/></svg>Isolate in 3D
+  </a>
+  <a class="btn ghost" href="/packages">Back to packages</a>
+</div>
+<p class="sub">
+  {{ package.cwa }} &middot; {{ package.cwp }} &middot; {{ package.ewp }}
+  &middot; {{ package.discipline }} &middot; sequence {{ package.poc_sequence }}
+  &middot; planned {{ package.planned_date }} &middot; {{ package.crew }}
+</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Components</div>
+    <div class="value">{{ package.components | num }}</div>
+    <div class="foot">{{ package.commissioning_systems }} commissioning system(s)</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Weight</div>
+    <div class="value">{{ '{:,.0f}'.format((package.weight_kg or 0) / 1000) }} t</div>
+    <div class="foot">{{ '{:,.0f}'.format(package.weight_kg or 0) }} kg from the model</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Estimated</div>
+    <div class="value">{{ '{:,.0f}'.format(package.estimated_hours or 0) }}</div>
+    <div class="foot">craft hours</div>
+  </div>
+  <div class="kpi {{ 'ok' if progress_pct >= 100 }}">
+    <div class="label">Installed</div>
+    <div class="value">{{ progress_pct }}%</div>
+    <div class="foot">{{ package.installed }} of {{ package.components }} items</div>
+  </div>
+</div>
+
+<div class="grid g2">
+  <div class="panel">
+    <h2>Readiness constraints</h2>
+    <p class="msg" style="margin-bottom:14px">
+      All four have to hold before this package can be released to a crew.
+      Three of them describe the physical world. The fourth describes the model,
+      and it is the only one this pipeline can guarantee on its own.
+    </p>
+    <table>
+      <tbody>
+      {% for c in readiness.constraints %}
+        <tr class="{{ 'attention' if not c.passed }}">
+          <td style="width:34px">
+            {% if c.passed %}
+              <span style="color:var(--ok); font-weight:700">&check;</span>
+            {% else %}
+              <span style="color:var(--k-yellow); font-weight:700">!</span>
+            {% endif %}
+          </td>
+          <td>
+            <div>{{ c.label }}</div>
+            <div class="msg">{{ c.detail }}</div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if readiness.verdict == 'READY' %}
+      <p class="msg" style="margin-top:14px">
+        Nothing outstanding. This package can go into a look-ahead as
+        constraint-free work.
+      </p>
+    {% elif readiness.verdict == 'BLOCKED' %}
+      <p class="msg" style="margin-top:14px">
+        {{ readiness.blockers | length }} constraint(s) outstanding. Each names
+        the specific components involved rather than only flagging the package,
+        because "this package is blocked" is not something anyone can act on.
+      </p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Lifecycle state</h2>
+    <p class="msg" style="margin-bottom:14px">
+      Where the items in this package sit on the eight-state chain. A package is
+      only as advanced as its least advanced item, which is why the spread
+      matters more than the headline.
+    </p>
+    <table>
+      <tbody>
+      {% set biggest = (lifecycle | map(attribute='n') | max) if lifecycle else 1 %}
+      {% for row in lifecycle %}
+        <tr>
+          <td style="width:30%">{{ row.lifecycle_status }}</td>
+          <td class="num" style="width:14%">{{ row.n }}</td>
+          <td>
+            <div class="bar {{ 'ok' if row.lifecycle_status in
+                               ('Installed','Tested','Commissioned') else '' }}">
+              <span style="width:{{ 100 * row.n / biggest }}%"></span>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    {% if predecessors %}
+      <h2 style="margin-top:22px">Preceding packages</h2>
+      <table>
+        <thead><tr><th>Package</th><th class="num">Seq</th><th class="num">Installed</th></tr></thead>
+        <tbody>
+        {% for p in predecessors %}
+          <tr class="{{ 'attention' if p.installed < p.components }}">
+            <td><a class="mono" href="/packages/{{ p.iwp }}">{{ p.iwp }}</a></td>
+            <td class="num">{{ p.poc_sequence }}</td>
+            <td class="num">{{ p.installed }} / {{ p.components }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Bill of materials</h2>
+  <p class="msg" style="margin-bottom:14px">
+    Rolled up from the model, not typed into a spreadsheet. Quantities and
+    weights come from the same attributes the QA gate checks, so if this table is
+    wrong the gate should have caught it upstream.
+  </p>
+  <table>
+    <thead><tr>
+      <th>Category</th><th class="num">Quantity</th><th class="num">Weight</th>
+      <th class="num">Materials</th><th class="num">Triangles</th>
+    </tr></thead>
+    <tbody>
+    {% for b in bom %}
+      <tr>
+        <td>{{ b.category }}</td>
+        <td class="num">{{ b.quantity | num }}</td>
+        <td class="num mono">{{ '{:,.0f}'.format(b.weight_kg or 0) }} kg</td>
+        <td class="num">{{ b.materials }}</td>
+        <td class="num">{{ b.triangles | num }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Components</h2>
+  <table>
+    <thead><tr>
+      <th>Tag</th><th>Category</th><th>Material</th><th>Commissioning system</th>
+      <th class="num">Weight</th><th>State</th>
+    </tr></thead>
+    <tbody>
+    {% for c in components %}
+      <tr>
+        <td class="mono">{{ c.tag }}</td>
+        <td class="msg">{{ c.category }}</td>
+        <td class="msg">{{ c.material or '' }}</td>
+        <td class="msg">{{ c.commissioning_system or '' }}</td>
+        <td class="num mono">{{ c.weight_kg or '' }}</td>
+        <td>
+          <span class="badge {{ 'b-complete' if c.lifecycle_status in
+                                ('Installed','Tested','Commissioned')
+                                else 'b-info' }}">{{ c.lifecycle_status }}</span>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

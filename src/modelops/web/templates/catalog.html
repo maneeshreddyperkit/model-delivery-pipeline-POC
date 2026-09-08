@@ -5,6 +5,25 @@
 <h1>Model catalog</h1>
 <p class="sub">What is live in the viewer right now, and what is not reaching users.</p>
 
+<div class="row" style="margin-bottom:16px">
+  <a class="btn ghost" href="/catalog?scope={{ 'fleet' if scope == 'measured' else 'measured' }}">
+    {% if scope == 'measured' %}
+      Show the whole fleet ({{ counts.total | num }} models)
+    {% else %}
+      Show converted models only ({{ counts.measured | num }})
+    {% endif %}
+  </a>
+  <span class="hint">
+    {% if scope == 'measured' %}
+      Showing the {{ counts.measured | num }} models this pipeline physically
+      converted. Byte figures are weighed, not estimated.
+    {% else %}
+      Showing all {{ counts.total | num }} models. Rows marked SIM are backfilled
+      fleet history with sampled sizes and no geometry on disk.
+    {% endif %}
+  </span>
+</div>
+
 <div class="panel">
   <h2>Live models</h2>
   <table>
@@ -19,7 +38,10 @@
       <tr>
         <td class="mono">{{ m.project_code }}</td>
         <td>
-          <div class="mono">{{ m.model_key }}</div>
+          <div class="mono">
+            {{ m.model_key }}
+            {% if m.is_simulated %}<span class="badge b-info">SIM</span>{% endif %}
+          </div>
           <div class="msg">{{ m.model_name }}</div>
         </td>
         <td class="msg">{{ m.discipline or '-' }}</td>
@@ -42,7 +64,7 @@
         </td>
         <td class="num msg">{{ '%.0f h' % m.age_hours if m.age_hours is not none else '-' }}</td>
         <td>
-          {% if m.live_revision %}
+          {% if m.live_revision and not m.is_simulated %}
             <a class="btn ghost" href="/viewer/{{ m.project_code }}/{{ m.model_key }}">Open</a>
           {% endif %}
         </td>

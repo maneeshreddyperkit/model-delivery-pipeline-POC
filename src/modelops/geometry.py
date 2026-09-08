@@ -397,6 +397,47 @@ def i_beam(depth: float, flange_width: float, web_thickness: float,
     return Mesh(verts, np.array(faces))
 
 
+def rect_tube(width: float, height: float, thickness: float, length: float) -> Mesh:
+    """Hollow rectangular section extruded along +X, centred at origin.
+
+    Used for HVAC duct and for hollow structural sections. Built as an
+    outer shell, an inner shell wound the other way, and an annular cap at
+    each end, rather than as four overlapping boxes. Four boxes would be
+    quicker to write and would bury eight coincident internal faces inside
+    the solid, which is exactly the kind of hidden surface the optimise
+    stage then has to pay to carry.
+    """
+    hw, hh, t = width / 2.0, height / 2.0, thickness
+    iw, ih = max(hw - t, 1e-3), max(hh - t, 1e-3)
+    hl = length / 2.0
+
+    outer = np.array([[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]])
+    inner = np.array([[-iw, -ih], [iw, -ih], [iw, ih], [-iw, ih]])
+
+    def ring(profile, x):
+        return np.column_stack([np.full(len(profile), x), profile[:, 0], profile[:, 1]])
+
+    verts = np.vstack([ring(outer, -hl), ring(outer, hl),
+                       ring(inner, -hl), ring(inner, hl)])
+    o0, o1, i0, i1 = 0, 4, 8, 12
+
+    faces = []
+    for k in range(4):
+        n = (k + 1) % 4
+        # outer skin, facing out
+        faces.append([o0 + k, o0 + n, o1 + n])
+        faces.append([o0 + k, o1 + n, o1 + k])
+        # inner skin, facing in
+        faces.append([i0 + k, i1 + n, i0 + n])
+        faces.append([i0 + k, i1 + k, i1 + n])
+        # annular caps at both ends
+        faces.append([o0 + k, i0 + k, i0 + n])
+        faces.append([o0 + k, i0 + n, o0 + n])
+        faces.append([o1 + k, o1 + n, i1 + n])
+        faces.append([o1 + k, i1 + n, i1 + k])
+    return Mesh(verts, np.array(faces))
+
+
 def channel(width: float, height: float, thickness: float, length: float) -> Mesh:
     """U-section cable tray / channel extruded along +X."""
     hw, hh, t = width / 2.0, height / 2.0, thickness

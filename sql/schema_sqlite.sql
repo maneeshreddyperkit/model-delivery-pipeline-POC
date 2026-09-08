@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS projects (
 -- A "model" is a logical deliverable (e.g. Unit 10 Piping).
 -- A "model_revision" is one specific source export of it.
 -- ---------------------------------------------------------------------
+-- is_simulated marks fleet-scale backfill. The POC physically converts a
+-- handful of models; the rest of the fleet is written straight into the
+-- catalog so throughput, latency and failure-rate charts have realistic
+-- volume behind them. Every table that backfill touches carries the flag,
+-- and any figure presented as *measured* filters on is_simulated = 0.
+-- Being able to answer "which of these numbers are real" with a WHERE
+-- clause is the point.
 CREATE TABLE IF NOT EXISTS models (
     model_id     INTEGER PRIMARY KEY AUTOINCREMENT,
     project_code TEXT NOT NULL REFERENCES projects(project_code),
@@ -36,6 +43,7 @@ CREATE TABLE IF NOT EXISTS models (
     model_name   TEXT NOT NULL,
     discipline   TEXT,
     source_tool  TEXT,
+    is_simulated INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (project_code, model_key)
 );
@@ -55,6 +63,7 @@ CREATE TABLE IF NOT EXISTS model_revisions (
     received_at      TEXT NOT NULL DEFAULT (datetime('now')),
     status           TEXT NOT NULL DEFAULT 'RECEIVED',
         -- RECEIVED | PROCESSING | PUBLISHED | FAILED | QUARANTINED | SUPERSEDED
+    is_simulated     INTEGER NOT NULL DEFAULT 0,
     -- content hash makes re-drops of an identical file idempotent
     UNIQUE (model_id, source_sha256)
 );
@@ -86,7 +95,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     error_kind       TEXT,       -- TRANSIENT | PERMANENT
     error_message    TEXT,
     next_attempt_at  TEXT,
-    replay_of_job_id INTEGER REFERENCES jobs(job_id)
+    replay_of_job_id INTEGER REFERENCES jobs(job_id),
+    is_simulated     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ix_jobs_status   ON jobs(status, next_attempt_at);
@@ -195,7 +205,8 @@ CREATE TABLE IF NOT EXISTS publications (
     lod_levels      INTEGER NOT NULL DEFAULT 1,
     is_current      INTEGER NOT NULL DEFAULT 1,
     superseded_at   TEXT,
-    rolled_back_at  TEXT
+    rolled_back_at  TEXT,
+    is_simulated    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS ix_pub_revision ON publications(revision_id);
@@ -291,6 +302,7 @@ SELECT
     m.model_key,
     m.model_name,
     m.discipline,
+    m.is_simulated,
     live.revision_label   AS live_revision,
     live.published_at     AS live_published_at,
     live.component_count,
@@ -321,6 +333,113 @@ LEFT JOIN (
     JOIN model_revisions r ON r.revision_id = p.revision_id
     WHERE p.is_current = 1
 ) live ON live.model_id = m.model_id;
+
+-- Fleet throughput per day, which is the shape the operations chart binds
+-- to. Split by measured versus simulated so the chart can show both and
+-- label which is which.
+DROP VIEW IF EXISTS v_daily_throughput;
+CREATE VIEW v_daily_throughput AS
+SELECT
+    date(j.queued_at)                                         AS run_date,
+    COUNT(*)                                                  AS jobs_total,
+    SUM(CASE WHEN j.status = 'SUCCEEDED' THEN 1 ELSE 0 END)   AS jobs_succeeded,
+    SUM(CASE WHEN j.status IN ('FAILED','QUARANTINED')
+             THEN 1 ELSE 0 END)                               AS jobs_failed,
+    SUM(CASE WHEN j.attempt > 1 THEN 1 ELSE 0 END)            AS jobs_retried,
+    SUM(j.is_simulated)                                       AS jobs_simulated,
+    SUM(CASE WHEN j.is_simulated = 0 THEN 1 ELSE 0 END)       AS jobs_measured,
+    ROUND(100.0 * SUM(CASE WHEN j.status = 'SUCCEEDED' THEN 1 ELSE 0 END)
+          / NULLIF(COUNT(*), 0), 1)                           AS success_rate_pct,
+    ROUND(AVG(j.duration_ms) / 1000.0, 1)                     AS avg_duration_s
+FROM jobs j
+GROUP BY date(j.queued_at);
+
+-- ---------------------------------------------------------------------
+-- Advanced Work Packaging
+--
+-- Attributes are stored key/value (one row per property per component)
+-- because a plant export carries different properties per discipline and
+-- a fixed column set would be wrong within a week. The cost is that
+-- packaging questions need a pivot, so it is written once here rather
+-- than repeated in application code.
+--
+-- Scoped to currently-published revisions: a package should describe
+-- what is live in the viewer, not every revision ever received.
+-- ---------------------------------------------------------------------
+DROP VIEW IF EXISTS v_component_packaging;
+CREATE VIEW v_component_packaging AS
+SELECT
+    c.component_id,
+    c.revision_id,
+    c.tag,
+    c.category,
+    c.discipline,
+    c.triangle_count,
+    c.has_geometry,
+    m.project_code,
+    m.model_key,
+    m.model_name,
+    MAX(CASE WHEN a.name = 'CWA'                 THEN a.value END) AS cwa,
+    MAX(CASE WHEN a.name = 'CWP'                 THEN a.value END) AS cwp,
+    MAX(CASE WHEN a.name = 'EWP'                 THEN a.value END) AS ewp,
+    MAX(CASE WHEN a.name = 'IWP'                 THEN a.value END) AS iwp,
+    MAX(CASE WHEN a.name = 'PathOfConstruction'  THEN a.value END) AS poc_sequence,
+    MAX(CASE WHEN a.name = 'PlannedInstallDate'  THEN a.value END) AS planned_date,
+    MAX(CASE WHEN a.name = 'LifecycleStatus'     THEN a.value END) AS lifecycle_status,
+    MAX(CASE WHEN a.name = 'CommissioningSystem' THEN a.value END) AS commissioning_system,
+    MAX(CASE WHEN a.name = 'IWPCrew'             THEN a.value END) AS crew,
+    MAX(CASE WHEN a.name = 'IWPEstimatedHours'   THEN a.value END) AS estimated_hours,
+    MAX(CASE WHEN a.name = 'WeightKg'            THEN a.value END) AS weight_kg,
+    MAX(CASE WHEN a.name = 'Material'            THEN a.value END) AS material,
+    MAX(CASE WHEN a.name = 'System'              THEN a.value END) AS system_code
+FROM components c
+JOIN model_revisions r ON r.revision_id = c.revision_id
+JOIN models          m ON m.model_id    = r.model_id
+JOIN publications    p ON p.revision_id = c.revision_id AND p.is_current = 1
+LEFT JOIN component_attributes a ON a.component_id = c.component_id
+GROUP BY c.component_id;
+
+-- One row per installation work package. `lagging_components` is the
+-- number of items behind their own package's headline state, which is
+-- the number that decides whether a crew can actually start.
+DROP VIEW IF EXISTS v_work_package;
+CREATE VIEW v_work_package AS
+SELECT
+    v.iwp,
+    v.cwp,
+    v.ewp,
+    v.cwa,
+    v.project_code,
+    v.model_key,
+    v.discipline,
+    MIN(CAST(v.poc_sequence AS INTEGER))  AS poc_sequence,
+    MIN(v.planned_date)                   AS planned_date,
+    MAX(v.crew)                           AS crew,
+    MAX(CAST(v.estimated_hours AS REAL))  AS estimated_hours,
+    COUNT(*)                              AS components,
+    SUM(v.triangle_count)                 AS triangles,
+    ROUND(SUM(CAST(COALESCE(v.weight_kg, '0') AS REAL)), 1) AS weight_kg,
+    COUNT(DISTINCT v.commissioning_system) AS commissioning_systems,
+    -- Progress against the eight-state lifecycle chain.
+    SUM(CASE WHEN v.lifecycle_status IN
+        ('Delivered','Installed','Tested','Commissioned') THEN 1 ELSE 0 END)
+                                          AS materials_on_site,
+    SUM(CASE WHEN v.lifecycle_status IN
+        ('Installed','Tested','Commissioned') THEN 1 ELSE 0 END)
+                                          AS installed,
+    SUM(CASE WHEN v.lifecycle_status = 'Designed' THEN 1 ELSE 0 END)
+                                          AS not_yet_issued,
+    -- Attribute integrity, which is what makes the package plannable at
+    -- all. A component missing these cannot be counted, costed or found.
+    SUM(CASE WHEN v.commissioning_system IS NULL OR v.commissioning_system = ''
+             THEN 1 ELSE 0 END)           AS missing_commissioning_system,
+    SUM(CASE WHEN v.material IS NULL OR v.material = ''
+             THEN 1 ELSE 0 END)           AS missing_material,
+    SUM(CASE WHEN v.system_code IS NULL OR v.system_code = ''
+             THEN 1 ELSE 0 END)           AS missing_system
+FROM v_component_packaging v
+WHERE v.iwp IS NOT NULL
+GROUP BY v.iwp;
 
 DROP VIEW IF EXISTS v_qa_summary;
 CREATE VIEW v_qa_summary AS

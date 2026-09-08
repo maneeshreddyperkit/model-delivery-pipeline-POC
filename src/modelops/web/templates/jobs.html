@@ -6,13 +6,35 @@
 <p class="sub">Every attempt, including retries and quarantines. Open a job to see the
 per-stage timeline, the metrics each stage recorded, and its log.</p>
 
-<div class="row" style="margin-bottom:16px">
-  <a class="btn" href="/jobs" style="{{ '' if status else 'filter:brightness(1.15)' }}">All</a>
+<div class="row" style="margin-bottom:12px">
+  <a class="btn" href="/jobs?scope={{ scope }}"
+     style="{{ '' if status else 'filter:brightness(1.15)' }}">All</a>
   {% for s in ['SUCCEEDED', 'QUARANTINED', 'FAILED', 'RETRYING', 'QUEUED'] %}
-    <a class="btn ghost" href="/jobs?status={{ s }}"
-       style="{{ 'border-color:var(--accent)' if status == s else '' }}">{{ s | title }}</a>
+    <a class="btn ghost" href="/jobs?scope={{ scope }}&status={{ s }}"
+       style="{{ 'border-color:var(--k-yellow)' if status == s else '' }}">{{ s | title }}</a>
   {% endfor %}
+  <div class="spacer"></div>
+  <a class="btn ghost" href="/jobs?status={{ status }}&scope={{ 'fleet' if scope == 'measured' else 'measured' }}">
+    {% if scope == 'measured' %}
+      Include fleet history ({{ counts.total | num }})
+    {% else %}
+      Measured runs only ({{ counts.measured | num }})
+    {% endif %}
+  </a>
 </div>
+
+<p class="hint" style="margin-bottom:16px">
+  {% if scope == 'measured' %}
+    Showing the {{ counts.measured | num }} jobs this machine actually ran. The
+    other {{ (counts.total - counts.measured) | num }} are backfilled nightly
+    history for projects the proof of concept does not convert; they have
+    outcomes and durations but no per-stage detail.
+  {% else %}
+    Showing all {{ counts.total | num }} jobs, newest 400. Rows marked
+    <span class="badge b-info">SIMULATED</span> are backfilled fleet history and
+    have no per-stage detail behind them.
+  {% endif %}
+</p>
 
 <div class="panel">
   <table>
@@ -24,7 +46,10 @@ per-stage timeline, the metrics each stage recorded, and its log.</p>
     <tbody>
     {% for j in jobs %}
       <tr>
-        <td><a href="/jobs/{{ j.job_id }}">#{{ j.job_id }}</a></td>
+        <td>
+          <a href="/jobs/{{ j.job_id }}">#{{ j.job_id }}</a>
+          {% if j.is_simulated %}<span class="badge b-info" style="margin-left:5px">SIM</span>{% endif %}
+        </td>
         <td class="mono">{{ j.project_code }}</td>
         <td class="mono">{{ j.model_key }}</td>
         <td class="mono">{{ j.revision_label }}</td>

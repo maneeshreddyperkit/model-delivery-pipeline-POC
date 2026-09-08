@@ -228,6 +228,23 @@ def _equipment_attrs(rng: random.Random, unit: str, area: str,
     }
 
 
+def _hvac_attrs(rng: random.Random, unit: str, area: str, system: str) -> dict:
+    return {
+        "System": system,
+        "Area": area,
+        "Unit": unit,
+        "Material": rng.choice(["GALV-STEEL", "SS-304", "ALUMINIUM"]),
+        "CommissioningSystem": f"CS-{system}",
+        "DuctClass": rng.choice(["LOW-PRESSURE", "MEDIUM-PRESSURE", "HIGH-PRESSURE"]),
+        "AirflowCFM": str(rng.choice([400, 800, 1600, 3200, 6400])),
+        "Insulation": rng.choice(["NONE", "DUCT-WRAP-25", "DUCT-LINER-50"]),
+        "PressureClass_inWG": rng.choice(["1", "2", "4", "6"]),
+        "SeismicCategory": rng.choice(["I", "II", "N/A"]),
+        "WBS": f"{unit}.{area}.HVC",
+        "WeightKg": f"{rng.uniform(15, 320):.1f}",
+    }
+
+
 def _electrical_attrs(rng: random.Random, unit: str, area: str) -> dict:
     return {
         "System": "ELEC",
@@ -266,6 +283,15 @@ def build_piping_model(rng: random.Random, project: str, key: str, name: str,
             g.torus(r * 1.5, r * 0.22, 18, 8).transformed(g.translation(0, 0, r * 5)),
         ]))
         m.define(f"geom_reducer_{nps}in", g.cone(r, 180, sections=20))
+        # A tee is the run bore plus a branch stub set at right angles to
+        # it. Built as one definition rather than two components, because
+        # that is how a piping export carries a fitting.
+        m.define(f"geom_tee_{nps}in", g.concat([
+            g.cylinder(r, r * 6, sections=20, capped=False),
+            g.cylinder(r * 0.86, r * 3.4, sections=16, capped=False)
+                .transformed(g.compose(g.rotation("x", 90),
+                                       g.translation(0, 0, r * 1.7))),
+        ]))
     m.define("geom_pipesupport", g.concat([
         g.box(160, 60, 400),
         g.box(300, 80, 40).transformed(g.translation(0, 0, 220)),
@@ -342,6 +368,14 @@ def build_piping_model(rng: random.Random, project: str, key: str, name: str,
                       transform=g.compose(g.translation(x, y, z),
                                           g.rotation("z", heading), g.rotation("y", 90)),
                       attributes=attrs)
+            elif roll < 0.68:
+                m.add(f"{unit_no}-TE-{sys_no}{item + 7}", parent_tag=line_tag, category="Tee",
+                      geometry_key=f"geom_tee_{nps}in",
+                      transform=g.compose(g.translation(x, y, z),
+                                          g.rotation("z", heading), g.rotation("y", 90)),
+                      attributes={**attrs, "BranchSize": f'{max(2, nps // 2)}"',
+                                  "FittingType": "EQUAL-TEE" if rng.random() < 0.6
+                                                 else "REDUCING-TEE"})
 
             if si % 3 == 0:
                 m.add(f"{unit_no}-PS-{sys_no}{item + 6}", parent_tag=line_tag,
@@ -542,9 +576,351 @@ def build_electrical_model(rng: random.Random, project: str, key: str, name: str
     return m
 
 
+def build_hvac_model(rng: random.Random, project: str, key: str, name: str,
+                     revision: str, *, runs: int = 8, air_handlers: int = 3) -> SynthModel:
+    """Ventilation: air handlers feeding rectangular trunk duct that splits
+    into round branches, with dampers, diffusers and hangers.
+
+    HVAC is the discipline that most reliably clashes with everything else,
+    because it is routed last and it is bulky. It is also the one where a
+    model with no attributes is most useless: a duct with no airflow, no
+    pressure class and no commissioning system is a grey box.
+    """
+    m = SynthModel(project, key, name, "HVAC", "Revit export", revision)
+    unit_no = "40"
+
+    # Trunk duct in two sizes, branches round, plus the fittings between.
+    m.define("geom_duct_1000x500", g.rect_tube(1000, 500, 12, 3000))
+    m.define("geom_duct_600x400", g.rect_tube(600, 400, 10, 3000))
+    m.define("geom_duct_round_400", g.cylinder(200, 2400, sections=18, capped=False))
+    m.define("geom_duct_elbow", g.torus(750, 250, major_segments=14,
+                                        minor_segments=12, sweep_degrees=90))
+    m.define("geom_duct_transition", g.cone(300, 700, sections=18))
+    m.define("geom_damper", g.concat([
+        g.rect_tube(1020, 520, 16, 220),
+        g.box(180, 940, 60).transformed(g.rotation("x", 22)),
+    ]))
+    m.define("geom_diffuser", g.concat([
+        g.box(600, 600, 90),
+        g.cone(190, 420).transformed(g.translation(0, 0, 250)),
+    ]))
+    m.define("geom_ahu", g.concat([
+        g.box(4200, 2200, 2400),
+        g.cylinder(520, 700, sections=20).transformed(
+            g.compose(g.translation(2300, 0, 0), g.rotation("y", 90))),
+        g.box(4400, 2400, 180).transformed(g.translation(0, 0, -1290)),
+    ]))
+    m.define("geom_duct_hanger", g.concat([
+        g.cylinder(24, 1200, sections=8),
+        g.box(1200, 60, 60).transformed(g.translation(0, 0, -620)),
+    ]))
+
+    area_tag = m.add(f"{unit_no}-A-400", category="Area",
+                     attributes={"System": "HVAC", "Area": "400", "Unit": unit_no,
+                                 "Material": "N/A", "CommissioningSystem": "CS-HVAC"})
+
+    # --- air handling units -------------------------------------------
+    for a in range(air_handlers):
+        system = f"AHU{600 + a}"
+        x, y = a * 16000.0, -9000.0
+        attrs = _hvac_attrs(rng, unit_no, "400", system)
+        m.add(f"{unit_no}-AHU-{6000 + a}", parent_tag=area_tag, category="AirHandlingUnit",
+              geometry_key="geom_ahu", transform=g.translation(x, y, 1500),
+              attributes={**attrs, "EquipmentType": "AHU",
+                          "SupplyCFM": str(rng.choice([12000, 18000, 24000])),
+                          "FilterClass": rng.choice(["MERV-13", "HEPA", "MERV-8"])})
+
+    # --- distribution ---------------------------------------------------
+    for r_i in range(runs):
+        system = f"AHU{600 + (r_i % max(air_handlers, 1))}"
+        y = r_i * 4200.0
+        z = 9400.0 if r_i % 2 else 7600.0
+        big = r_i % 3 != 0
+        trunk = "geom_duct_1000x500" if big else "geom_duct_600x400"
+
+        run_tag = m.add(f"{unit_no}-SYS-{700 + r_i}", parent_tag=area_tag, category="DuctRun",
+                        attributes=_hvac_attrs(rng, unit_no, "400", system))
+
+        for s in range(11):
+            x = s * 3000.0
+            attrs = _hvac_attrs(rng, unit_no, "400", system)
+
+            m.add(f"{unit_no}-DU-{9000 + r_i * 100 + s}", parent_tag=run_tag,
+                  category="Duct", geometry_key=trunk,
+                  transform=g.compose(g.translation(x, y, z), g.rotation("y", 90)),
+                  attributes={**attrs,
+                              "DuctSize": "1000x500" if big else "600x400"})
+
+            if s % 3 == 0:
+                m.add(f"{unit_no}-DH-{9200 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="DuctHanger", geometry_key="geom_duct_hanger",
+                      transform=g.translation(x, y, z + 900), attributes=attrs)
+
+            if s % 4 == 2:
+                # Branch drop: transition, round duct, damper, diffuser.
+                m.add(f"{unit_no}-DT-{9400 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="DuctTransition", geometry_key="geom_duct_transition",
+                      transform=g.compose(g.translation(x, y + 700, z - 500),
+                                          g.rotation("x", 180)),
+                      attributes=attrs)
+                m.add(f"{unit_no}-DB-{9500 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="DuctBranch", geometry_key="geom_duct_round_400",
+                      transform=g.translation(x, y + 700, z - 1900),
+                      attributes={**attrs, "DuctSize": "400 dia"})
+                m.add(f"{unit_no}-DP-{9600 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="Damper", geometry_key="geom_damper",
+                      transform=g.translation(x, y + 700, z - 3100),
+                      attributes={**attrs, "DamperType":
+                                  rng.choice(["FIRE", "VOLUME-CONTROL", "SMOKE"])})
+                m.add(f"{unit_no}-DF-{9700 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="Diffuser", geometry_key="geom_diffuser",
+                      transform=g.translation(x, y + 700, z - 3600),
+                      attributes={**attrs, "DiffuserType":
+                                  rng.choice(["4-WAY", "LINEAR-SLOT", "PERFORATED"])})
+
+            if s == 10:
+                m.add(f"{unit_no}-DE-{9800 + r_i * 100 + s}", parent_tag=run_tag,
+                      category="DuctElbow", geometry_key="geom_duct_elbow",
+                      transform=g.compose(g.translation(x + 1500, y, z),
+                                          g.rotation("x", 90)),
+                      attributes={**attrs, "BendRadius": "1.5W"})
+    return m
+
+
+# =====================================================================
+# Advanced Work Packaging
+#
+# CII's AWP procedure is blunt about the dependency this whole POC turns
+# on: work-packaging software "is critically dependent upon the
+# structure, attributes and integrity of the 3D model." A model can look
+# perfect and still be useless for planning if the objects in it do not
+# say which package they belong to.
+#
+# So every component gets the packaging hierarchy:
+#
+#   CWA  Construction Work Area     a geographic zone of the site
+#   CWP  Construction Work Package  one discipline's scope within a CWA
+#   EWP  Engineering Work Package   the design deliverable feeding a CWP
+#   IWP  Installation Work Package  what a crew actually executes, a week
+#                                   or two of work for one crew
+#
+# plus a Path of Construction sequence number, a planned install date and
+# a lifecycle state.
+#
+# Packaging is applied after the geometry is built rather than inside
+# each builder, because an IWP has to be a *coherent* set of objects. The
+# builders already group components under a line, a level, a cable run or
+# a duct run, and those groups are the natural unit of installable work.
+# Deriving packages from that structure produces IWPs a planner would
+# recognise; sprinkling random package IDs over components would produce
+# a field that validates and means nothing.
+# =====================================================================
+
+LIFECYCLE_STATES = [
+    "Designed", "IFC", "Procured", "Fabricated",
+    "Delivered", "Installed", "Tested", "Commissioned",
+]
+
+DISCIPLINE_CODES = {
+    "PIPING": "PIP", "STRUCTURAL": "STL", "EQUIPMENT": "EQP",
+    "ELECTRICAL": "ELE", "HVAC": "HVC", "CIVIL": "CIV",
+}
+
+# How far each IWP has progressed. Weighted towards the later half of the
+# chain, because a project far enough along to be worth building a viewer
+# for has much of its scope fabricated or installed.
+_PROGRESS_WEIGHTS = [0.04, 0.07, 0.10, 0.13, 0.16, 0.24, 0.15, 0.11]
+
+MAX_COMPONENTS_PER_IWP = 90
+
+# Fraction of geometry-bearing components left with attribute gaps.
+#
+# This is deliberate and it is the most important number in the file.
+# The QA gate blocks a model whose attribute coverage falls below 90%, so
+# a gap of a few percent passes the gate and still lands in the delivered
+# model. Concentrating those few percent into a handful of packages
+# reproduces the situation that actually costs people time: the model was
+# accepted, the dashboard is green, and one crew cannot start because
+# eleven of their components have no commissioning system.
+#
+# The gate is a floor, not a guarantee. Showing both is the point.
+ATTRIBUTE_GAP_BUDGET_PCT = 4.5
+GAPPED_PACKAGES_PER_MODEL = 3
+
+
+def assign_work_packaging(model: SynthModel, rng: random.Random, *,
+                          schedule_start: datetime | None = None) -> None:
+    """Attach CWA/CWP/EWP/IWP, sequence, dates and lifecycle state in place."""
+    if not model.components:
+        return
+
+    disc = DISCIPLINE_CODES.get(model.discipline, model.discipline[:3].upper())
+    by_tag = {c["tag"]: c for c in model.components}
+    roots = [c for c in model.components if c["parent_tag"] is None]
+    root_tags = {c["tag"] for c in roots}
+
+    def group_of(component: dict) -> str:
+        """The line, level, cable run or duct run this component sits under.
+
+        Walks up to the child-of-area node, which is the level the
+        builders already organise work at.
+        """
+        seen, node = set(), component
+        while node["parent_tag"] is not None and node["parent_tag"] not in root_tags:
+            if node["tag"] in seen:
+                break                      # defensive: duplicate-tag defects
+            seen.add(node["tag"])
+            parent = by_tag.get(node["parent_tag"])
+            if parent is None:
+                break
+            node = parent
+        return node["tag"]
+
+    # -- bucket components into groups, preserving authoring order -----
+    groups: dict[str, list[dict]] = {}
+    for component in model.components:
+        groups.setdefault(group_of(component), []).append(component)
+
+    # -- a group becomes one or more IWPs ------------------------------
+    area = next((c["attributes"].get("Area") for c in model.components
+                 if c["attributes"].get("Area") not in (None, "N/A")), "100")
+    unit = next((c["attributes"].get("Unit") for c in model.components
+                 if c["attributes"].get("Unit")), "10")
+
+    # Package identifiers are scoped to the project. The builders reuse
+    # unit numbers per discipline, so without the project in the key an
+    # IWP in the Turbine Building and an IWP in the Nuclear Island would
+    # share an id and silently merge into one package downstream.
+    proj = model.project_code.rsplit("-", 1)[-1]
+    cwa = f"CWA-{proj}-{area}"
+    start = schedule_start or datetime.now(timezone.utc) - timedelta(days=120)
+
+    # Only physical items are packaged. The Area, System, Line, Level and
+    # Run nodes are the model's organising structure, not installable
+    # work, and putting them in packages would produce one-item packages
+    # of nothing and inflate every component count and BOM rollup.
+    ordered_groups = [(tag, [c for c in members if c["geometry_key"]])
+                      for tag, members in groups.items()]
+    ordered_groups = [(tag, members) for tag, members in ordered_groups if members]
+
+    # Roughly six groups to a CWP, which keeps a CWP at a few thousand
+    # craft hours rather than one package covering an entire building.
+    sequence = 0
+    for g_index, (group_tag, members) in enumerate(ordered_groups):
+        cwp_no = g_index // 6 + 1
+        cwp = f"CWP-{proj}-{area}-{disc}-{cwp_no:02d}"
+        ewp = f"EWP-{proj}-{area}-{disc}-{cwp_no:02d}"
+
+        for chunk_index in range(0, len(members), MAX_COMPONENTS_PER_IWP):
+            chunk = members[chunk_index:chunk_index + MAX_COMPONENTS_PER_IWP]
+            sequence += 1
+            iwp = f"IWP-{proj}-{area}-{disc}-{cwp_no:02d}-{sequence:03d}"
+
+            progress = rng.choices(range(len(LIFECYCLE_STATES)),
+                                   weights=_PROGRESS_WEIGHTS, k=1)[0]
+            planned = start + timedelta(days=sequence * 3 + rng.randint(0, 2))
+            crew = rng.choice(["Crew-A", "Crew-B", "Crew-C", "Crew-D"])
+            hours = len(chunk) * rng.uniform(3.5, 9.0)
+
+            for component in chunk:
+                # A minority of items lag their package. This is the
+                # realistic case and it is the whole point of the
+                # readiness check: the package says Installed, three
+                # valves say Delivered, and the crew finds out on site.
+                #
+                # Lag is floored at Delivered once the package itself is
+                # installed, because something that has been erected was
+                # self-evidently delivered. Without that floor the model
+                # produces packages that are 90% installed and still
+                # claim to be waiting on materials.
+                state = progress
+                if rng.random() < 0.08:
+                    state = progress - rng.randint(1, 2)
+                    floor = 4 if progress >= 5 else 0   # 4 = Delivered
+                    state = max(floor, state)
+
+                component["attributes"].update({
+                    "CWA": cwa,
+                    "CWP": cwp,
+                    "EWP": ewp,
+                    "IWP": iwp,
+                    "PathOfConstruction": str(sequence),
+                    "PlannedInstallDate": planned.strftime("%Y-%m-%d"),
+                    "LifecycleStatus": LIFECYCLE_STATES[state],
+                    "IWPCrew": crew,
+                    "IWPEstimatedHours": f"{hours:.0f}",
+                })
+
+    _inject_attribute_gaps(model, rng)
+
+
+def _inject_attribute_gaps(model: SynthModel, rng: random.Random) -> None:
+    """Leave a few packages with incomplete attributes, under the QA gate.
+
+    Real exports are rarely uniformly good or uniformly bad. One area gets
+    modelled by someone in a hurry, or a property mapping is missed for one
+    system, and the result is a model that passes an aggregate coverage
+    check while being unusable for a specific package.
+
+    The budget is sized against the gate: stay under it, so these models
+    publish, and the gap surfaces where it actually bites, on the work
+    packaging page rather than in the pipeline log.
+    """
+    physical = [c for c in model.components if c["geometry_key"]]
+    if len(physical) < 40:
+        return
+
+    budget = int(len(physical) * ATTRIBUTE_GAP_BUDGET_PCT / 100.0)
+    if budget < 3:
+        return
+
+    by_package: dict[str, list[dict]] = {}
+    for component in physical:
+        iwp = component["attributes"].get("IWP")
+        if iwp:
+            by_package.setdefault(iwp, []).append(component)
+    if not by_package:
+        return
+
+    # Two preferences, both so the gap lands somewhere it can be seen.
+    #
+    # Smaller packages, so the gap is a large share of one package (which
+    # blocks it) while staying a small share of the model (which keeps it
+    # under the gate).
+    #
+    # Packages that are physically well advanced, so the attribute gap is
+    # the *only* thing blocking them. A package already blocked on
+    # materials tells you nothing new; one where the steel is up and the
+    # only obstacle is a missing commissioning system is the argument.
+    advanced = {"Installed", "Tested", "Commissioned"}
+    candidates = [
+        kv for kv in by_package.items()
+        if len(kv[1]) >= 4
+        and sum(1 for c in kv[1]
+                if c["attributes"].get("LifecycleStatus") in advanced) >= len(kv[1]) - 1
+    ]
+    if len(candidates) < GAPPED_PACKAGES_PER_MODEL:
+        candidates += [kv for kv in by_package.items() if len(kv[1]) >= 4]
+    candidates.sort(key=lambda kv: len(kv[1]))
+    rng.shuffle(candidates)
+
+    spent = 0
+    for _, members in candidates[:GAPPED_PACKAGES_PER_MODEL]:
+        if spent >= budget:
+            break
+        take = min(len(members), budget - spent, rng.randint(4, 14))
+        # One missing field per package, so the reason is legible rather
+        # than a component with nothing on it at all.
+        field = rng.choice(["CommissioningSystem", "Material", "System"])
+        for component in rng.sample(members, take):
+            component["attributes"].pop(field, None)
+        spent += take
+
+
 BUILDERS = {
     "PIPING": build_piping_model,
     "STRUCTURAL": build_structural_model,
     "EQUIPMENT": build_equipment_model,
     "ELECTRICAL": build_electrical_model,
+    "HVAC": build_hvac_model,
 }

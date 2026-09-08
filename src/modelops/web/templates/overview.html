@@ -5,8 +5,21 @@
 <h1>Delivery operations</h1>
 <p class="sub">
   Every model that arrived, what the pipeline did with it, and what is currently
-  live for users. All figures are measured from the runs in this catalog.
+  live for users, across {{ districts | length }} districts.
 </p>
+
+<div class="note">
+  <strong>What is real here.</strong>
+  {{ stats.measured_jobs }} of these {{ stats.jobs_total | num }} jobs ran on this
+  machine: geometry converted, bytes weighed, quality gates enforced. The other
+  {{ stats.simulated_jobs | num }} are {{ stats.history_days }} days of backfilled
+  nightly history for projects this proof of concept does not convert, so
+  throughput and reliability read at the scale the real platform runs at.
+  Backfilled rows are flagged <span class="mono">is_simulated = 1</span> in the
+  catalog and you can filter them out in the
+  <a href="/query">SQL</a> tab. Every payload figure and every per-stage timing
+  below is measured, never sampled.
+</div>
 
 <div class="kpis">
   <div class="kpi {{ 'ok' if stats.success_rate_pct >= 90 else 'warn' if stats.success_rate_pct >= 70 else 'err' }}">
@@ -14,7 +27,7 @@
     <div class="value">{{ stats.success_rate_pct }}%</div>
     <div class="foot">{{ stats.jobs_succeeded }} of {{ stats.jobs_total }} jobs</div>
   </div>
-  <div class="kpi accent">
+  <div class="kpi">
     <div class="label">Models live</div>
     <div class="value">{{ stats.models_live }}</div>
     <div class="foot">{{ stats.subscribers | num }} subscribers served</div>
@@ -27,15 +40,65 @@
   <div class="kpi ok">
     <div class="label">Payload reduction</div>
     <div class="value">{{ stats.payload_reduction_pct }}%</div>
-    <div class="foot">vs naive conversion</div>
+    <div class="foot">measured on {{ stats.measured_models }} models</div>
   </div>
   <a href="/alerts"
-     class="kpi {{ 'err' if stats.critical_alerts else 'warn' if stats.open_alerts else 'ok' }}">
+     class="kpi {{ 'attention' if stats.open_alerts }} {{ 'err' if stats.critical_alerts else 'warn' if stats.open_alerts else 'ok' }}">
     <div class="label">Open alerts</div>
     <div class="value">{{ stats.open_alerts }}</div>
     <div class="foot">{{ stats.critical_alerts }} critical &middot; view all</div>
   </a>
 </div>
+
+{% if throughput %}
+<div class="panel">
+  <h2>Nightly conversion throughput</h2>
+  <p class="msg" style="margin-bottom:14px">
+    Models converted per night across every district, with the share that failed.
+    The point of running this at fleet scale is that a single bad night is
+    visible as a bad night rather than as noise.
+  </p>
+  <div id="throughput-chart" style="height:260px"></div>
+  <p class="hint" style="margin-top:10px">
+    Bars are jobs per night; the line is that night's success rate.
+  </p>
+</div>
+{% endif %}
+
+{% if districts %}
+<div class="panel">
+  <h2>Reliability by district</h2>
+  <p class="msg" style="margin-bottom:14px">
+    The same pipeline serves several districts with different project sizes and
+    different SLAs. Splitting the success rate this way is what turns one global
+    number into something an owner can act on.
+  </p>
+  <table>
+    <thead><tr>
+      <th>District</th><th class="num">Projects</th><th class="num">Models</th>
+      <th class="num">Subscribers</th><th class="num">Jobs</th>
+      <th class="num">Success</th><th></th>
+    </tr></thead>
+    <tbody>
+    {% for d in districts %}
+      <tr>
+        <td>{{ d.district }}</td>
+        <td class="num">{{ d.projects }}</td>
+        <td class="num">{{ d.models | num }}</td>
+        <td class="num">{{ d.subscribers | num }}</td>
+        <td class="num">{{ d.jobs | num }}</td>
+        <td class="num mono">{{ d.success_rate_pct or 0 }}%</td>
+        <td style="width:26%">
+          <div class="bar {{ 'ok' if (d.success_rate_pct or 0) >= 90 else 'warn' }}">
+            <span style="width:{{ d.success_rate_pct or 0 }}%"></span>
+          </div>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
 
 <div class="panel">
   <h2>Delivery payload</h2>
@@ -70,9 +133,13 @@
   <div class="panel">
     <h2>Where processing time goes</h2>
     <p class="msg" style="margin-bottom:14px">
-      End to end a model takes {{ stats.avg_duration_s }}s on average,
-      {{ stats.p95_duration_s }}s at p95. Per-stage timings say which step to
-      optimise first when that number stops being acceptable.
+      Measured across the {{ stats.measured_jobs }} models converted here, end to
+      end takes {{ stats.measured_avg_duration_s }}s on average,
+      {{ stats.measured_p95_duration_s }}s at p95. These are the only timings on
+      this page: the backfilled fleet history records outcomes, not stage
+      internals, so nothing here is averaged with a sampled number. Per-stage
+      timings say which step to optimise first when that number stops being
+      acceptable.
     </p>
     {% if stages %}
     <table>
@@ -187,4 +254,73 @@
   </table>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
+{% if throughput %}
+<script src="/static/vendor/lib/echarts.min.js"></script>
+<script>
+(function () {
+  const data = {{ throughput | tojson }};
+  const css = getComputedStyle(document.documentElement);
+  const v = (name) => css.getPropertyValue(name).trim();
+
+  const chart = echarts.init(document.getElementById('throughput-chart'));
+  chart.setOption({
+    grid: { left: 46, right: 52, top: 30, bottom: 26 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: v('--grey-950'),
+      borderColor: v('--line'),
+      textStyle: { color: v('--text'), fontSize: 12 },
+      axisPointer: { type: 'shadow', shadowStyle: { color: 'rgba(255,255,255,.04)' } },
+    },
+    legend: {
+      data: ['Succeeded', 'Failed', 'Success rate'],
+      textStyle: { color: v('--muted'), fontSize: 11 },
+      icon: 'roundRect', itemWidth: 10, itemHeight: 10, top: 0, right: 0,
+    },
+    xAxis: {
+      type: 'category',
+      data: data.map(d => d.run_date.slice(5)),
+      axisLine: { lineStyle: { color: v('--line') } },
+      axisLabel: { color: v('--grey-500'), fontSize: 10.5 },
+      axisTick: { show: false },
+    },
+    yAxis: [
+      {
+        type: 'value',
+        splitLine: { lineStyle: { color: v('--line-soft'), type: 'dashed' } },
+        axisLabel: { color: v('--grey-500'), fontSize: 10.5 },
+      },
+      {
+        type: 'value', min: 0, max: 100, splitLine: { show: false },
+        axisLabel: { color: v('--grey-500'), fontSize: 10.5, formatter: '{value}%' },
+      },
+    ],
+    series: [
+      {
+        name: 'Succeeded', type: 'bar', stack: 'jobs',
+        data: data.map(d => d.jobs_succeeded),
+        itemStyle: { color: v('--grey-600') },
+      },
+      {
+        // Failures are the attention state, so they carry the brand colour.
+        name: 'Failed', type: 'bar', stack: 'jobs',
+        data: data.map(d => d.jobs_failed),
+        itemStyle: { color: v('--k-yellow'), borderRadius: [3, 3, 0, 0] },
+      },
+      {
+        name: 'Success rate', type: 'line', yAxisIndex: 1, smooth: true,
+        symbol: 'circle', symbolSize: 5,
+        data: data.map(d => d.success_rate_pct),
+        lineStyle: { color: v('--info'), width: 2 },
+        itemStyle: { color: v('--info') },
+      },
+    ],
+  });
+  window.addEventListener('resize', () => chart.resize());
+})();
+</script>
+{% endif %}
 {% endblock %}
