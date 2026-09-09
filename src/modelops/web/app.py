@@ -299,10 +299,11 @@ def create_app(config: Config, db: Database) -> Flask:
     @app.route("/handover")
     def page_handover():
         project = request.args.get("project", "") or None
+        summary = handover.page_summary(db, project)
         return render_template(
             "handover.html",
-            feeds=handover.catalog(db, project),
-            completeness=handover.completeness(db, project),
+            feeds=summary["feeds"],
+            completeness=summary["completeness"],
             integration=handover.integration_status(db),
             project=project or "",
             projects=rows("SELECT DISTINCT project_code FROM v_work_package "
