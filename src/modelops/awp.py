@@ -243,35 +243,80 @@ def project_options(db: Database) -> list[dict]:
             for code in sorted({p["project_code"] for p in cached_board(db)})]
 
 
+def _as_real(value) -> float:
+    """SQLite's CAST(x AS REAL) semantics: unparseable text reads as zero."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# Filtering v_component_packaging by iwp cannot use an index, because iwp is
+# itself one of the pivoted columns, so every WHERE iwp = ? re-runs the whole
+# pivot. The detail page needed five of those. Index the components by package
+# once instead, and slice it per request.
+_components_cache: dict[tuple, dict[str, list[dict]]] = {}
+
+
+def components_by_package(db: Database) -> dict[str, list[dict]]:
+    """Every published component grouped by the package that owns it."""
+    version = data_version(db)
+    index = _components_cache.get(version)
+    if index is None:
+        _components_cache.clear()
+        index = _components_cache[version] = {}
+        for row in db.query(
+                "SELECT iwp, tag, category, material, lifecycle_status, "
+                "       commissioning_system, weight_kg, triangle_count, "
+                "       has_geometry "
+                "FROM v_component_packaging ORDER BY tag"):
+            component = dict(row)
+            index.setdefault(component["iwp"], []).append(component)
+    return index
+
+
 def package_detail(db: Database, iwp: str) -> dict | None:
     """One package: constraints, bill of materials, and its components."""
-    package = db.query_one("SELECT * FROM v_work_package WHERE iwp = ?", (iwp,))
+    board = cached_board(db)
+    package = next((p for p in board if p["iwp"] == iwp), None)
     if package is None:
         return None
-    package = dict(package)
 
-    siblings = _packages(db, "WHERE cwp = ?", (package["cwp"],))
-    predecessors = [p for p in siblings
-                    if (p["poc_sequence"] or 0) < (package["poc_sequence"] or 0)]
+    predecessors = [p for p in board
+                    if p["cwp"] == package["cwp"]
+                    and (p["poc_sequence"] or 0) < (package["poc_sequence"] or 0)]
     readiness = evaluate(package, predecessors)
 
-    bom = [dict(r) for r in db.query(
-        "SELECT category, COUNT(*) AS quantity, "
-        "       ROUND(SUM(CAST(COALESCE(weight_kg, '0') AS REAL)), 1) AS weight_kg, "
-        "       SUM(triangle_count) AS triangles, "
-        "       COUNT(DISTINCT material) AS materials "
-        "FROM v_component_packaging WHERE iwp = ? "
-        "GROUP BY category ORDER BY quantity DESC", (iwp,))]
+    members = components_by_package(db).get(iwp, [])
 
-    lifecycle = [dict(r) for r in db.query(
-        "SELECT lifecycle_status, COUNT(*) AS n FROM v_component_packaging "
-        "WHERE iwp = ? GROUP BY lifecycle_status", (iwp,))]
+    rollup: dict[str, dict] = {}
+    for c in members:
+        entry = rollup.setdefault(c["category"], {
+            "quantity": 0, "weight_kg": 0.0, "triangles": 0, "materials": set()})
+        entry["quantity"] += 1
+        entry["weight_kg"] += _as_real(c["weight_kg"])
+        entry["triangles"] += c["triangle_count"] or 0
+        if c["material"]:
+            entry["materials"].add(c["material"])
+    bom = [{"category": category,
+            "quantity": e["quantity"],
+            "weight_kg": round(e["weight_kg"], 1),
+            "triangles": e["triangles"],
+            "materials": len(e["materials"])}
+           for category, e in rollup.items()]
+    # Heaviest commodity first. Ties break on name so the table is stable
+    # between requests, which the SQL GROUP BY it replaced was not.
+    bom.sort(key=lambda e: (-e["quantity"], e["category"]))
+
+    counts: dict[str, int] = {}
+    for c in members:
+        counts[c["lifecycle_status"]] = counts.get(c["lifecycle_status"], 0) + 1
+    lifecycle = [{"lifecycle_status": state, "n": n} for state, n in counts.items()]
     lifecycle.sort(key=lambda r: STATE_INDEX.get(r["lifecycle_status"], 99))
 
-    components = [dict(r) for r in db.query(
-        "SELECT tag, category, material, lifecycle_status, commissioning_system, "
-        "       weight_kg, has_geometry "
-        "FROM v_component_packaging WHERE iwp = ? ORDER BY tag", (iwp,))]
+    keep = ("tag", "category", "material", "lifecycle_status",
+            "commissioning_system", "weight_kg", "has_geometry")
+    components = [{k: c[k] for k in keep} for c in members]
 
     return {
         "package": package,
