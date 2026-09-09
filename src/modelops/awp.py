@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .db import Database
+from .db import Database, data_version
 
 # Order matters: this is the chain a component progresses along, and
 # "has it reached state X" is an index comparison against it.
@@ -209,6 +209,38 @@ def package_board(db: Database, *, project_code: str | None = None,
                                   / (pkg["components"] or 1), 1),
         })
     return out
+
+
+# The board is derived entirely from the current publications, and costs a
+# scan of v_component_packaging to build. The packages page renders it on
+# every visit and every filter change, so it is cached the same way the
+# handover summary is: against a token that moves only when a model
+# publishes. Filters are applied to the cached board in the view, which is
+# why they are not part of the key.
+_board_cache: dict[tuple[str | None, tuple], list[dict]] = {}
+
+
+def cached_board(db: Database, project_code: str | None = None) -> list[dict]:
+    """package_board, memoised against the live model set."""
+    version = data_version(db)
+    key = (project_code, version)
+    board = _board_cache.get(key)
+    if board is None:
+        for stale in [k for k in _board_cache if k[1] != version]:
+            del _board_cache[stale]
+        board = _board_cache[key] = package_board(db, project_code=project_code)
+    return board
+
+
+def project_options(db: Database) -> list[dict]:
+    """Projects that have packages, shaped for the filter row templates.
+
+    Read off the cached board rather than queried, because a DISTINCT over
+    v_work_package costs the same scan as the board itself and both the
+    packages and handover pages need it on every render.
+    """
+    return [{"project_code": code}
+            for code in sorted({p["project_code"] for p in cached_board(db)})]
 
 
 def package_detail(db: Database, iwp: str) -> dict | None:

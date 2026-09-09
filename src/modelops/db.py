@@ -34,6 +34,18 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def data_version(db: "Database") -> tuple:
+    """Cheap token that changes whenever the live model set changes.
+
+    Everything the packaging and handover pages derive is a function of
+    the current publications, so a page can cache its summary against
+    this and be certain it is never showing a superseded model.
+    """
+    row = db.query("SELECT COUNT(*), COALESCE(MAX(publication_id), 0) "
+                   "FROM publications WHERE is_current = 1")
+    return tuple(row[0]) if row else (0, 0)
+
+
 class Database:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)

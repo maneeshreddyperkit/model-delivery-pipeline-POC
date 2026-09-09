@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import project_root
-from .db import Database
+from .db import Database, data_version
 
 # Attributes a receiving system needs before a component is any use to
 # it. Distinct from the QA gate's required_attributes, which is about
@@ -374,13 +374,6 @@ def catalog(db: Database, project_code: str | None = None) -> list[dict]:
 # deliberately left uncached: those are the artefact a consumer takes away,
 # and they should always be generated fresh.
 _summary_cache: dict[tuple[str | None, tuple], dict] = {}
-
-
-def data_version(db: Database) -> tuple:
-    """Cheap token that changes whenever the live model set changes."""
-    row = db.query("SELECT COUNT(*), COALESCE(MAX(publication_id), 0) "
-                   "FROM publications WHERE is_current = 1")
-    return tuple(row[0]) if row else (0, 0)
 
 
 def page_summary(db: Database, project_code: str | None = None) -> dict:

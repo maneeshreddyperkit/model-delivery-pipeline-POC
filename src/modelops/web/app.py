@@ -274,7 +274,7 @@ def create_app(config: Config, db: Database) -> Flask:
     def page_packages():
         project = request.args.get("project", "")
         verdict = request.args.get("verdict", "")
-        board = awp.package_board(db, project_code=project or None)
+        board = awp.cached_board(db, project or None)
         summary = awp.board_summary(board)
         if verdict == "DATA":
             # Not a verdict, a cause: every package the model data is
@@ -285,8 +285,7 @@ def create_app(config: Config, db: Database) -> Flask:
         return render_template(
             "packages.html",
             board=board, summary=summary, verdict=verdict, project=project,
-            projects=rows("SELECT DISTINCT project_code FROM v_work_package "
-                          "ORDER BY project_code"),
+            projects=awp.project_options(db),
             page="packages")
 
     @app.route("/packages/<path:iwp>")
@@ -306,8 +305,7 @@ def create_app(config: Config, db: Database) -> Flask:
             completeness=summary["completeness"],
             integration=handover.integration_status(db),
             project=project or "",
-            projects=rows("SELECT DISTINCT project_code FROM v_work_package "
-                          "ORDER BY project_code"),
+            projects=awp.project_options(db),
             page="handover")
 
     @app.route("/handover/feed/<key>")
