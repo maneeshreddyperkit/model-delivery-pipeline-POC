@@ -23,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from modelops import cli                      # noqa: E402
+from modelops import cli, handover            # noqa: E402
 from modelops.config import load_config       # noqa: E402
 from modelops.db import Database              # noqa: E402
 from modelops.web.app import create_app       # noqa: E402
@@ -56,6 +56,19 @@ def bootstrap() -> tuple:
             print("No catalog found - running the demo pipeline to seed one.",
                   flush=True)
             cli.cmd_demo(_demo_args())
+
+    # The Handover summary is the one page whose queries are slow enough to
+    # notice on a small instance. Build it here, for every project filter,
+    # so the cost lands on startup rather than on a visitor's first click.
+    try:
+        scopes = [None] + [r[0] for r in db.query(
+            "SELECT DISTINCT project_code FROM v_work_package "
+            "ORDER BY project_code")]
+        for scope in scopes:
+            handover.page_summary(db, scope)
+        print(f"Handover summary warmed for {len(scopes)} scopes.", flush=True)
+    except Exception as exc:                       # never block serving
+        print(f"Handover warm skipped: {exc}", flush=True)
 
     return config, db
 
